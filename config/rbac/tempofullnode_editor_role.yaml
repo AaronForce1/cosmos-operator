@@ -1,0 +1,24 @@
+# permissions for end users to edit tempofullnodes.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: tempofullnode-editor-role
+rules:
+- apiGroups:
+  - tempo.aaronforce.io
+  resources:
+  - tempofullnodes
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - tempo.aaronforce.io
+  resources:
+  - tempofullnodes/status
+  verbs:
+  - get

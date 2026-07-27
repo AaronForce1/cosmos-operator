@@ -1,0 +1,51 @@
+# Validator deployment on Tempo mainnet.
+#
+# Prerequisites:
+# 1. Generate the consensus signing key out of band:
+#      tempo consensus generate-signing-key --output signing-key --secret <(cat encryption-secret)
+# 2. Create the Secret (never commit real key material):
+#      kubectl create secret generic tempo-validator-keys \
+#        --from-file=signing-key=./signing-key \
+#        --from-file=consensus-secret=./encryption-secret
+# 3. Register the validator with the Tempo team (permissioned validator set).
+#
+# One signing-key Secret must be referenced by exactly ONE TempoFullNode in ONE cluster.
+# See docs/double_sign_safety.md before operating a validator with this operator.
+apiVersion: tempo.aaronforce.io/v1alpha1
+kind: TempoFullNode
+metadata:
+  name: tempo-validator
+spec:
+  role: validator
+  # Validators are limited to a single replica (enforced by CRD validation).
+  replicas: 1
+  chain:
+    chain: mainnet
+  podTemplate:
+    image: ghcr.io/tempoxyz/tempo:1.11.0
+    nodeSelector:
+      # Pin onto a node pool with local NVMe SSD ephemeral storage.
+      cloud.google.com/gke-ephemeral-storage-local-ssd: "true"
+    resources:
+      requests:
+        cpu: "8"
+        memory: 16Gi
+        ephemeral-storage: 500Gi
+  signingKey:
+    signingKeySecret:
+      name: tempo-validator-keys
+      key: signing-key
+    encryptionSecret:
+      name: tempo-validator-keys
+      key: consensus-secret
+  execVolume:
+    emptyDir:
+      sizeLimit: 500Gi
+  consensusVolume:
+    storageClassName: standard-rwo
+    resources:
+      requests:
+        storage: 20Gi
+  snapshotInit:
+    # Validators default to the minimal snapshot profile; recovery is minutes, not hours.
+    policy: Auto

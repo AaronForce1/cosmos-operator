@@ -1,0 +1,47 @@
+# A TempoFullNode that syncs against the Tempo moderato testnet.
+#
+# Sized for local development (kind via `make dev-up && make dev-sample`) — it also works on a
+# real cluster if you raise the resources and follow docs/storage.md for the exec volume.
+#
+# Snapshot bootstrap: before the node container starts, the operator runs a `snapshot-init`
+# init container executing `tempo download --chain moderato --datadir <exec-datadir>`, so the
+# node restores from a snapshot first and then follows the network. `spec.snapshotInit` controls
+# this:
+#   policy:  Auto (default) = download only when the exec datadir is empty; Always = force a
+#            refresh (--force, preserving node identity files); Never = sync from genesis.
+#   profile: minimal|full|archive (defaults by role; rpc -> full).
+#   url / manifestURL: pull the snapshot from YOUR OWN source instead of the default
+#            (snapshots.tempo.xyz) — handed to `tempo download` as --url/--manifest-url.
+apiVersion: tempo.aaronforce.io/v1alpha1
+kind: TempoFullNode
+metadata:
+  name: moderato-rpc
+spec:
+  role: rpc
+  replicas: 1
+  chain:
+    chain: moderato
+  podTemplate:
+    image: ghcr.io/tempoxyz/tempo:1.11.0
+    resources:
+      requests:
+        cpu: "1"
+        memory: 2Gi
+  execVolume:
+    emptyDir:
+      sizeLimit: 50Gi
+  consensusVolume:
+    # kind's default storage class; use standard-rwo/premium-rwo on GKE.
+    storageClassName: standard
+    resources:
+      requests:
+        storage: 5Gi
+  snapshotInit:
+    policy: Auto
+    # Restore from a custom snapshot source (stretch goal): point at any host serving
+    # tempo-download-compatible snapshots. Leave unset to use the chain's default source.
+    # url: https://snapshots.example.com/moderato/latest
+    # manifestURL: https://snapshots.example.com/moderato/manifest.json
+  service:
+    # kind has no LoadBalancer implementation; keep p2p services ClusterIP-only.
+    maxP2PExternalAddresses: 0

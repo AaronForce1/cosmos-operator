@@ -3,41 +3,29 @@ package test
 import (
 	"testing"
 
-	cosmosv1 "github.com/strangelove-ventures/cosmos-operator/api/v1"
+	tempov1alpha1 "github.com/aaronforce1/cosmos-operator/api/v1alpha1"
 	"github.com/stretchr/testify/require"
 )
 
-func HasTypeLabel(t *testing.T, builder func(crd cosmosv1.CosmosFullNode) []map[string]string) {
+// HasRoleLabel asserts every resource built from the crd carries the role label.
+func HasRoleLabel(t *testing.T, builder func(crd tempov1alpha1.TempoFullNode) []map[string]string) {
 	t.Run("sets labels for", func(t *testing.T) {
-		var crd cosmosv1.CosmosFullNode
+		var crd tempov1alpha1.TempoFullNode
 		crd.Spec.Replicas = 3
 
-		t.Run("type", func(t *testing.T) {
-			t.Run("given unspecified type sets type to FullNode", func(t *testing.T) {
+		t.Run("role", func(t *testing.T) {
+			for _, role := range []tempov1alpha1.NodeRole{
+				tempov1alpha1.NodeRoleValidator,
+				tempov1alpha1.NodeRoleRPC,
+				tempov1alpha1.NodeRoleArchive,
+			} {
+				crd.Spec.Role = role
 				resources := builder(crd)
 
 				for _, resource := range resources {
-					require.Equal(t, "FullNode", resource["cosmos.strange.love/type"])
+					require.Equal(t, string(role), resource["tempo.aaronforce.io/role"])
 				}
-			})
-
-			t.Run("given Sentry type", func(t *testing.T) {
-				crd.Spec.Type = "Sentry"
-				resources := builder(crd)
-
-				for _, resource := range resources {
-					require.Equal(t, "Sentry", resource["cosmos.strange.love/type"])
-				}
-			})
-
-			t.Run("given FullNode type", func(t *testing.T) {
-				crd.Spec.Type = "FullNode"
-				resources := builder(crd)
-
-				for _, resource := range resources {
-					require.Equal(t, "FullNode", resource["cosmos.strange.love/type"])
-				}
-			})
+			}
 		})
 	})
 }

@@ -47,7 +47,7 @@ func TestServiceControl_Reconcile(t *testing.T) {
 		require.Equal(t, "osmosis-p2p-2", mClient.LastCreateObject.Name)
 		require.NotEmpty(t, mClient.LastCreateObject.OwnerReferences)
 		require.Equal(t, crd.Name, mClient.LastCreateObject.OwnerReferences[0].Name)
-		require.Equal(t, "CosmosFullNode", mClient.LastCreateObject.OwnerReferences[0].Kind)
+		require.Equal(t, "TempoFullNode", mClient.LastCreateObject.OwnerReferences[0].Kind)
 		require.True(t, *mClient.LastCreateObject.OwnerReferences[0].Controller)
 
 		require.Equal(t, 2, mClient.UpdateCount)

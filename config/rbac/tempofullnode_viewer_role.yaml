@@ -1,0 +1,20 @@
+# permissions for end users to view tempofullnodes.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: tempofullnode-viewer-role
+rules:
+- apiGroups:
+  - tempo.aaronforce.io
+  resources:
+  - tempofullnodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - tempo.aaronforce.io
+  resources:
+  - tempofullnodes/status
+  verbs:
+  - get

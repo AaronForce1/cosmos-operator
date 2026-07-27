@@ -1,53 +1,14 @@
-# See https://github.com/golangci/golangci-lint/blob/master/.golangci.yml for an updated example.
-
+version: "2"
 run:
-  # If set we pass it to "go list -mod={option}". From "go help modules":
-  # If invoked with -mod=readonly, the go command is disallowed from the implicit
-  # automatic updating of go.mod described above. Instead, it fails when any changes
-  # to go.mod are needed. This setting is most useful to check that go.mod does
-  # not need updates, such as in a continuous integration and testing system.
-  # If invoked with -mod=vendor, the go command assumes that the vendor
-  # directory holds the correct copies of dependencies and ignores
-  # the dependency descriptions in go.mod.
-  #
-  # Allowed values: readonly|vendor|mod
   modules-download-mode: readonly
-
-linters-settings:
-  depguard:
-    rules:
-      tests:
-        deny:
-          - pkg: github.com/stretchr/testify/assert
-            desc: "Use github.com/stretchr/testify/require instead of testify/assert"
-          - pkg: github.com/onsi/gomega
-            desc: "Although Ginkgo is used in kubebuilder, use testify instead. Ginkgo is bloated providing little value."
-          - pkg: github.com/onsi/ginkgo/v2
-            desc: "Although Ginkgo is used in kubebuilder, use testify instead. Ginkgo is bloated providing little value."
-          - pkg: github.com/onsi/ginkgo
-            desc: "Although Ginkgo is used in kubebuilder, use testify instead. Ginkgo is bloated providing little value."
-  govet: {}
-  misspell:
-    locale: US
-    ignore-words:
-      - "statuser"
-  nakedret:
-    max-func-lines: 0 # Completely disallow naked returns
-  nolintlint:
-    allow-unused: false # Report any unused nolint directives
-    require-explanation: false # Don't require an explanation for nolint directives
-    require-specific: false # Don't require nolint directives to be specific
-
 linters:
-  disable-all: true
+  default: none
   enable:
     - bodyclose
+    - copyloopvar
     - depguard
     - errcheck
-    - copyloopvar  # Replaces exportloopref (Go 1.22+)
-    - goimports
     - goprintffuncname
-    - gosimple
     - govet
     - ineffassign
     - misspell
@@ -55,7 +16,49 @@ linters:
     - noctx
     - nolintlint
     - staticcheck
-    - stylecheck  # Replacement for golint
     - unconvert
     - unused
     - whitespace
+  settings:
+    depguard:
+      rules:
+        tests:
+          deny:
+            - pkg: github.com/stretchr/testify/assert
+              desc: Use github.com/stretchr/testify/require instead of testify/assert
+            - pkg: github.com/onsi/gomega
+              desc: Although Ginkgo is used in kubebuilder, use testify instead. Ginkgo is bloated providing little value.
+            - pkg: github.com/onsi/ginkgo/v2
+              desc: Although Ginkgo is used in kubebuilder, use testify instead. Ginkgo is bloated providing little value.
+            - pkg: github.com/onsi/ginkgo
+              desc: Although Ginkgo is used in kubebuilder, use testify instead. Ginkgo is bloated providing little value.
+    misspell:
+      locale: US
+      ignore-rules:
+        - statuser
+    nakedret:
+      max-func-lines: 0
+    nolintlint:
+      require-explanation: false
+      require-specific: false
+      allow-unused: false
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

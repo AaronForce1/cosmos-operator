@@ -3,50 +3,28 @@ package fullnode
 import (
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/samber/lo"
-	cosmosv1 "github.com/strangelove-ventures/cosmos-operator/api/v1"
-	"github.com/strangelove-ventures/cosmos-operator/internal/kube"
-	"github.com/strangelove-ventures/cosmos-operator/internal/test"
+	tempov1alpha1 "github.com/aaronforce1/cosmos-operator/api/v1alpha1"
+	"github.com/aaronforce1/cosmos-operator/internal/test"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
-func defaultCRD() cosmosv1.CosmosFullNode {
-	return cosmosv1.CosmosFullNode{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            "osmosis",
-			Namespace:       "test",
-			ResourceVersion: "_resource_version_",
-		},
-		Spec: cosmosv1.FullNodeSpec{
-			ChainSpec: cosmosv1.ChainSpec{Network: "mainnet"},
-			PodTemplate: cosmosv1.PodSpec{
-				Image: "busybox:v1.2.3",
-				Resources: corev1.ResourceRequirements{
-					Limits: map[corev1.ResourceName]resource.Quantity{
-						corev1.ResourceCPU:    resource.MustParse("5"),
-						corev1.ResourceMemory: resource.MustParse("5Gi"),
-					},
-					Requests: map[corev1.ResourceName]resource.Quantity{
-						corev1.ResourceCPU:    resource.MustParse("1"),
-						corev1.ResourceMemory: resource.MustParse("500M"),
-					},
-				},
-			},
-			VolumeClaimTemplate: cosmosv1.PersistentVolumeClaimSpec{
-				Resources: corev1.ResourceRequirements{
-					Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("100Gi")},
-				},
-			},
-		},
-		Status: cosmosv1.FullNodeStatus{
-			Height: make(map[string]uint64),
-		},
+var testNow = time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+
+func argsAfterFlag(t *testing.T, args []string, flag string) string {
+	t.Helper()
+	for i, a := range args {
+		if a == flag {
+			require.Less(t, i+1, len(args), "flag %s has no value", flag)
+			return args[i+1]
+		}
 	}
+	t.Fatalf("flag %s not found in %v", flag, args)
+	return ""
 }
 
 func TestPodBuilder(t *testing.T) {
@@ -54,731 +32,448 @@ func TestPodBuilder(t *testing.T) {
 
 	t.Run("happy path - critical fields", func(t *testing.T) {
 		crd := defaultCRD()
-		builder := NewPodBuilder(&crd)
+		builder := NewPodBuilder(&crd, testNow)
 		pod, err := builder.WithOrdinal(5).Build()
 		require.NoError(t, err)
 
 		require.Equal(t, "Pod", pod.Kind)
 		require.Equal(t, "v1", pod.APIVersion)
-
 		require.Equal(t, "test", pod.Namespace)
 		require.Equal(t, "osmosis-5", pod.Name)
 
-		require.Equal(t, "osmosis", pod.Spec.Subdomain)
-		require.Equal(t, "osmosis-5", pod.Spec.Hostname)
-
 		wantLabels := map[string]string{
 			"app.kubernetes.io/instance":   "osmosis-5",
-			"app.kubernetes.io/component":  "CosmosFullNode",
-			"app.kubernetes.io/created-by": "cosmos-operator",
+			"app.kubernetes.io/created-by": "tempo-operator",
+			"app.kubernetes.io/component":  "TempoFullNode",
 			"app.kubernetes.io/name":       "osmosis",
 			"app.kubernetes.io/version":    "v1.2.3",
-			"cosmos.strange.love/network":  "mainnet",
-			"cosmos.strange.love/type":     "FullNode",
+			"tempo.aaronforce.io/chain":    "mainnet",
+			"tempo.aaronforce.io/role":     "rpc",
 		}
 		require.Equal(t, wantLabels, pod.Labels)
-		require.NotNil(t, pod.Annotations)
-		require.Empty(t, pod.Annotations)
 
 		require.EqualValues(t, 30, *pod.Spec.TerminationGracePeriodSeconds)
+		require.Equal(t, "osmosis-5", pod.Spec.Hostname)
+		require.Equal(t, "osmosis", pod.Spec.Subdomain)
 
 		sc := pod.Spec.SecurityContext
 		require.EqualValues(t, 1025, *sc.RunAsUser)
 		require.EqualValues(t, 1025, *sc.RunAsGroup)
 		require.EqualValues(t, 1025, *sc.FSGroup)
-		require.EqualValues(t, "OnRootMismatch", *sc.FSGroupChangePolicy)
 		require.True(t, *sc.RunAsNonRoot)
-		require.Equal(t, corev1.SeccompProfileTypeRuntimeDefault, sc.SeccompProfile.Type)
 
-		// Test we don't share or leak data per invocation.
-		pod, err = builder.Build()
-		require.NoError(t, err)
-		require.Empty(t, pod.Name)
-
-		pod, err = builder.WithOrdinal(123).Build()
-		require.NoError(t, err)
-		require.Equal(t, "osmosis-123", pod.Name)
-
-		crd.Spec.Type = cosmosv1.FullNode
-		pod2, err := NewPodBuilder(&crd).WithOrdinal(123).Build()
-		require.NoError(t, err)
-		require.Equal(t, pod, pod2)
-	})
-
-	t.Run("instanceOverrides - nodeSelector applied", func(t *testing.T) {
-		crd := defaultCRD()
-		crd.Spec.InstanceOverrides = map[string]cosmosv1.InstanceOverridesSpec{
-			"osmosis-5": {
-				NodeSelector: map[string]string{"kubernetes.io/hostname": "worker-1"},
-			},
-		}
-
-		builder := NewPodBuilder(&crd)
-		pod, err := builder.WithOrdinal(5).Build()
-		require.NoError(t, err)
-
-		// Verify that nodeSelector was applied from InstanceOverrides
-		require.NotNil(t, pod.Spec.NodeSelector)
-		require.Equal(t, "worker-1", pod.Spec.NodeSelector["kubernetes.io/hostname"])
-	})
-
-	t.Run("happy path - ports", func(t *testing.T) {
-		crd := defaultCRD()
-		pod, err := NewPodBuilder(&crd).Build()
-		require.NoError(t, err)
-		ports := pod.Spec.Containers[0].Ports
-
-		require.Equal(t, 7, len(ports))
-
-		for i, tt := range []struct {
-			Name string
-			Port int32
-		}{
-			{"api", 1317},
-			{"rosetta", 8080},
-			{"grpc", 9090},
-			{"prometheus", 26660},
-			{"p2p", 26656},
-			{"rpc", 26657},
-			{"grpc-web", 9091},
-		} {
-			port := ports[i]
-			require.Equal(t, tt.Name, port.Name, tt)
-			require.Equal(t, corev1.ProtocolTCP, port.Protocol)
-			require.Equal(t, tt.Port, port.ContainerPort)
-			require.Zero(t, port.HostPort)
-		}
-	})
-
-	t.Run("override ports", func(t *testing.T) {
-		crd := defaultCRD()
-		crd.Spec.ChainSpec.Comet.RPCListenAddress = "tcp://0.0.0.0:27147"
-		crd.Spec.ChainSpec.Comet.P2PListenAddress = "tcp://0.0.0.0:27146"
-		pod, err := NewPodBuilder(&crd).Build()
-		require.NoError(t, err)
-		ports := pod.Spec.Containers[0].Ports
-
-		require.Equal(t, 7, len(ports))
-
-		for i, tt := range []struct {
-			Name string
-			Port int32
-		}{
-			{"api", 1317},
-			{"rosetta", 8080},
-			{"grpc", 9090},
-			{"prometheus", 26660},
-			{"p2p", 27146},
-			{"rpc", 27147},
-			{"grpc-web", 9091},
-		} {
-			port := ports[i]
-			require.Equal(t, tt.Name, port.Name, tt)
-			require.Equal(t, corev1.ProtocolTCP, port.Protocol)
-			require.Equal(t, tt.Port, port.ContainerPort)
-			require.Zero(t, port.HostPort)
-		}
-	})
-
-	t.Run("ports - sentry", func(t *testing.T) {
-		crd := defaultCRD()
-		crd.Spec.Type = cosmosv1.Sentry
-
-		pod, err := NewPodBuilder(&crd).Build()
-		require.NoError(t, err)
-		ports := pod.Spec.Containers[0].Ports
-
-		require.Equal(t, 8, len(ports))
-
-		got, _ := lo.Last(ports)
-
-		require.Equal(t, "privval", got.Name)
-		require.Equal(t, corev1.ProtocolTCP, got.Protocol)
-		require.EqualValues(t, 1234, got.ContainerPort)
-		require.Zero(t, got.HostPort)
-	})
-
-	t.Run("happy path - optional fields", func(t *testing.T) {
-		optCrd := defaultCRD()
-
-		optCrd.Spec.PodTemplate.Metadata.Labels = map[string]string{"custom": "label", kube.NameLabel: "should not see me"}
-		optCrd.Spec.PodTemplate.Metadata.Annotations = map[string]string{"custom": "annotation"}
-
-		optCrd.Spec.PodTemplate.Affinity = &corev1.Affinity{
-			PodAffinity: &corev1.PodAffinity{
-				RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{TopologyKey: "affinity1"}},
-			},
-		}
-		optCrd.Spec.PodTemplate.ImagePullPolicy = corev1.PullAlways
-		optCrd.Spec.PodTemplate.ImagePullSecrets = []corev1.LocalObjectReference{{Name: "pullSecrets"}}
-		optCrd.Spec.PodTemplate.NodeSelector = map[string]string{"node": "test"}
-		optCrd.Spec.PodTemplate.Tolerations = []corev1.Toleration{{Key: "toleration1"}}
-		optCrd.Spec.PodTemplate.PriorityClassName = "priority1"
-		optCrd.Spec.PodTemplate.Priority = ptr(int32(55))
-		optCrd.Spec.PodTemplate.TerminationGracePeriodSeconds = ptr(int64(40))
-
-		builder := NewPodBuilder(&optCrd)
-		pod, err := builder.WithOrdinal(9).Build()
-		require.NoError(t, err)
-
-		require.Equal(t, "label", pod.Labels["custom"])
-		// Operator label takes precedence.
-		require.Equal(t, "osmosis", pod.Labels[kube.NameLabel])
-
-		require.Equal(t, "annotation", pod.Annotations["custom"])
-
-		require.Equal(t, optCrd.Spec.PodTemplate.Affinity, pod.Spec.Affinity)
-		require.Equal(t, optCrd.Spec.PodTemplate.Tolerations, pod.Spec.Tolerations)
-		require.EqualValues(t, 40, *optCrd.Spec.PodTemplate.TerminationGracePeriodSeconds)
-		require.Equal(t, optCrd.Spec.PodTemplate.NodeSelector, pod.Spec.NodeSelector)
-
-		require.Equal(t, "priority1", pod.Spec.PriorityClassName)
-		require.EqualValues(t, 55, *pod.Spec.Priority)
-		require.Equal(t, optCrd.Spec.PodTemplate.ImagePullSecrets, pod.Spec.ImagePullSecrets)
-
-		require.EqualValues(t, "Always", pod.Spec.Containers[0].ImagePullPolicy)
-	})
-
-	t.Run("long name", func(t *testing.T) {
-		longCrd := defaultCRD()
-		longCrd.Name = strings.Repeat("a", 253)
-
-		builder := NewPodBuilder(&longCrd)
-		pod, err := builder.WithOrdinal(125).Build()
-		require.NoError(t, err)
-
-		require.Regexp(t, `a.*-125`, pod.Name)
-
-		test.RequireValidMetadata(t, pod)
-	})
-
-	t.Run("additional args", func(t *testing.T) {
-		crd := defaultCRD()
-
-		crd.Spec.ChainSpec.AdditionalStartArgs = []string{"--foo", "bar"}
-
-		builder := NewPodBuilder(&crd)
-		pod, err := builder.WithOrdinal(0).Build()
-		require.NoError(t, err)
-
-		test.RequireValidMetadata(t, pod)
-
-		require.Equal(t, []string{"start", "--home", "/home/operator/cosmos", "--foo", "bar"}, pod.Spec.Containers[0].Args)
-	})
-
-	t.Run("containers", func(t *testing.T) {
-		crd := defaultCRD()
-		const wantWrkDir = "/home/operator"
-		crd.Spec.ChainSpec.ChainID = "osmosis-123"
-		crd.Spec.ChainSpec.Binary = "osmosisd"
-		crd.Spec.ChainSpec.SnapshotURL = ptr("https://example.com/snapshot.tar")
-		crd.Spec.PodTemplate.Image = "main-image:v1.2.3"
-		builder := NewPodBuilder(&crd)
-		pod, err := builder.WithOrdinal(6).Build()
-		require.NoError(t, err)
-
+		// node + healthcheck sidecar
 		require.Len(t, pod.Spec.Containers, 2)
 
-		startContainer := pod.Spec.Containers[0]
-		require.Equal(t, "node", startContainer.Name)
-		require.Empty(t, startContainer.ImagePullPolicy)
-		require.Equal(t, crd.Spec.PodTemplate.Resources, startContainer.Resources)
-		require.Equal(t, wantWrkDir, startContainer.WorkingDir)
+		node := pod.Spec.Containers[0]
+		require.Equal(t, "node", node.Name)
+		require.Equal(t, "ghcr.io/tempoxyz/tempo:v1.2.3", node.Image)
+		require.Equal(t, []string{"tempo"}, node.Command)
+		require.Equal(t, "node", node.Args[0])
+		require.Equal(t, "/home/operator", node.WorkingDir)
 
-		require.Equal(t, startContainer.Env[0].Name, "HOME")
-		require.Equal(t, startContainer.Env[0].Value, "/home/operator")
-		require.Equal(t, startContainer.Env[1].Name, "CHAIN_HOME")
-		require.Equal(t, startContainer.Env[1].Value, "/home/operator/cosmos")
-		require.Equal(t, startContainer.Env[2].Name, "GENESIS_FILE")
-		require.Equal(t, startContainer.Env[2].Value, "/home/operator/cosmos/config/genesis.json")
-		require.Equal(t, startContainer.Env[3].Name, "ADDRBOOK_FILE")
-		require.Equal(t, startContainer.Env[3].Value, "/home/operator/cosmos/config/addrbook.json")
-		require.Equal(t, startContainer.Env[4].Name, "CONFIG_DIR")
-		require.Equal(t, startContainer.Env[4].Value, "/home/operator/cosmos/config")
-		require.Equal(t, startContainer.Env[5].Name, "DATA_DIR")
-		require.Equal(t, startContainer.Env[5].Value, "/home/operator/cosmos/data")
-		require.Equal(t, envVars(&crd), startContainer.Env)
+		require.Equal(t, ExecDataDir, argsAfterFlag(t, node.Args, "--datadir"))
+		require.Equal(t, "mainnet", argsAfterFlag(t, node.Args, "--chain"))
+		require.Equal(t, ConsensusDataDir, argsAfterFlag(t, node.Args, "--consensus.datadir"))
+		// rpc role runs with --follow.
+		require.Contains(t, node.Args, "--follow")
+		// No signing key flags without spec.signingKey.
+		require.NotContains(t, node.Args, "--consensus.signing-key")
+		require.Equal(t, "30303", argsAfterFlag(t, node.Args, "--port"))
+		require.Equal(t, "0.0.0.0", argsAfterFlag(t, node.Args, "--discovery.addr"))
+		require.Equal(t, "30303", argsAfterFlag(t, node.Args, "--discovery.port"))
+		require.Contains(t, node.Args, "--http")
+		require.Equal(t, "0.0.0.0", argsAfterFlag(t, node.Args, "--http.addr"))
+		require.Equal(t, "8545", argsAfterFlag(t, node.Args, "--http.port"))
+		require.Equal(t, "eth,net,web3,txpool,trace", argsAfterFlag(t, node.Args, "--http.api"))
+		require.Equal(t, "9000", argsAfterFlag(t, node.Args, "--metrics"))
+		require.NotContains(t, node.Args, "--ws")
 
-		healthContainer := pod.Spec.Containers[1]
-		require.Equal(t, "healthcheck", healthContainer.Name)
-		require.Equal(t, "ghcr.io/strangelove-ventures/cosmos-operator:latest", healthContainer.Image)
-		require.Equal(t, []string{"/manager", "healthcheck", "--rpc-host", "http://localhost:26657"}, healthContainer.Command)
-		require.Empty(t, healthContainer.Args)
-		require.Empty(t, healthContainer.ImagePullPolicy)
-		require.NotEmpty(t, healthContainer.Resources)
-		require.Empty(t, healthContainer.Env)
-		healthPort := corev1.ContainerPort{
-			ContainerPort: 1251,
-			Protocol:      "TCP",
+		wantEnv := []corev1.EnvVar{
+			{Name: "HOME", Value: "/home/operator"},
+			{Name: "CHAIN", Value: "mainnet"},
+			{Name: "DATA_DIR", Value: ExecDataDir},
+			{Name: "CONSENSUS_DATA_DIR", Value: ConsensusDataDir},
 		}
-		require.Equal(t, healthPort, healthContainer.Ports[0])
+		require.Equal(t, wantEnv, node.Env)
 
-		require.Len(t, lo.Map(pod.Spec.InitContainers, func(c corev1.Container, _ int) string { return c.Name }), 7)
+		healthcheckC := pod.Spec.Containers[1]
+		require.Equal(t, "healthcheck", healthcheckC.Name)
+		require.Equal(t, "ghcr.io/aaronforce1/tempo-operator:latest", healthcheckC.Image)
+		require.Equal(t, []string{"/manager", "healthcheck", "--rpc-host", "http://localhost:8545"}, healthcheckC.Command)
 
-		wantInitImages := []string{
-			"ghcr.io/strangelove-ventures/infra-toolkit:v0.1.6",
-			"main-image:v1.2.3",
-			"ghcr.io/strangelove-ventures/infra-toolkit:v0.1.6",
-			"ghcr.io/strangelove-ventures/infra-toolkit:v0.1.6",
-			"ghcr.io/strangelove-ventures/infra-toolkit:v0.1.6",
-			"ghcr.io/strangelove-ventures/infra-toolkit:v0.1.6",
-			"ghcr.io/strangelove-ventures/cosmos-operator:latest",
+		// Ports
+		portNames := make(map[string]corev1.ContainerPort)
+		for _, p := range node.Ports {
+			portNames[p.Name+"/"+string(p.Protocol)] = p
 		}
-		require.Equal(t, wantInitImages, lo.Map(pod.Spec.InitContainers, func(c corev1.Container, _ int) string {
-			return c.Image
-		}))
+		require.EqualValues(t, 30303, portNames["p2p/TCP"].ContainerPort)
+		require.EqualValues(t, 30303, portNames["p2p-udp/UDP"].ContainerPort)
+		require.EqualValues(t, 8545, portNames["http-rpc/TCP"].ContainerPort)
+		require.EqualValues(t, 9000, portNames["metrics/TCP"].ContainerPort)
 
-		for _, c := range pod.Spec.InitContainers {
-			require.Equal(t, envVars(&crd), startContainer.Env, c.Name)
-			require.Equal(t, wantWrkDir, c.WorkingDir)
-		}
+		// Volumes: exec emptyDir + consensus PVC. No signing key for rpc role.
+		require.Len(t, pod.Spec.Volumes, 2)
+		require.Equal(t, "vol-exec-data", pod.Spec.Volumes[0].Name)
+		require.NotNil(t, pod.Spec.Volumes[0].EmptyDir)
+		require.Equal(t, "vol-consensus", pod.Spec.Volumes[1].Name)
+		require.Equal(t, "pvc-osmosis-5", pod.Spec.Volumes[1].PersistentVolumeClaim.ClaimName)
 
-		freshCont := pod.Spec.InitContainers[0]
-		require.Contains(t, freshCont.Args[1], `rm -rf "$HOME/.tmp/*"`)
+		require.Equal(t, []corev1.VolumeMount{
+			{Name: "vol-exec-data", MountPath: ExecDataDir},
+			{Name: "vol-consensus", MountPath: ConsensusDataDir},
+		}, node.VolumeMounts)
 
-		initCont := pod.Spec.InitContainers[1]
-		require.Contains(t, initCont.Args[1], `osmosisd init --chain-id osmosis-123 osmosis-6 --home "$CHAIN_HOME"`)
-		require.Contains(t, initCont.Args[1], `osmosisd init --chain-id osmosis-123 osmosis-6 --home "$HOME/.tmp"`)
-
-		mergeConfig1 := pod.Spec.InitContainers[3]
-		// The order of config-merge arguments is important. Rightmost takes precedence.
-		require.Contains(t, mergeConfig1.Args[1], `echo Using default address book`)
-
-		mergeConfig := pod.Spec.InitContainers[4]
-		// The order of config-merge arguments is important. Rightmost takes precedence.
-		require.Contains(t, mergeConfig.Args[1], `config-merge -f toml "$TMP_DIR/config.toml" "$OVERLAY_DIR/config-overlay.toml" > "$CONFIG_DIR/config.toml"`)
-		require.Contains(t, mergeConfig.Args[1], `config-merge -f toml "$TMP_DIR/app.toml" "$OVERLAY_DIR/app-overlay.toml" > "$CONFIG_DIR/app.toml`)
+		// Sidecar mounts both datadirs read-only for disk usage collection.
+		require.Equal(t, []corev1.VolumeMount{
+			{Name: "vol-exec-data", MountPath: ExecDataDir, ReadOnly: true},
+			{Name: "vol-consensus", MountPath: ConsensusDataDir, ReadOnly: true},
+		}, healthcheckC.VolumeMounts)
 	})
 
-	t.Run("containers - configured home dir", func(t *testing.T) {
+	t.Run("validator", func(t *testing.T) {
+		crd := defaultValidatorCRD()
+		pod, err := NewPodBuilder(&crd, testNow).WithOrdinal(0).Build()
+		require.NoError(t, err)
+
+		node := pod.Spec.Containers[0]
+		// Validators do not follow.
+		require.NotContains(t, node.Args, "--follow")
+		require.Equal(t, "/etc/tempo-keys/signing-key", argsAfterFlag(t, node.Args, "--consensus.signing-key"))
+		require.Equal(t, "/etc/tempo-keys/consensus-secret", argsAfterFlag(t, node.Args, "--consensus.secret"))
+
+		// Signing key volume projected from a single secret with 0400 mode.
+		require.Len(t, pod.Spec.Volumes, 3)
+		keyVol := pod.Spec.Volumes[2]
+		require.Equal(t, "vol-signing-key", keyVol.Name)
+		require.NotNil(t, keyVol.Projected)
+		require.EqualValues(t, 0o400, *keyVol.Projected.DefaultMode)
+		require.Len(t, keyVol.Projected.Sources, 1) // same secret for both keys
+		items := keyVol.Projected.Sources[0].Secret.Items
+		require.Equal(t, "signing-key", items[0].Path)
+		require.Equal(t, "consensus-secret", items[1].Path)
+
+		// Mounted read-only into the node container only.
+		require.Equal(t, corev1.VolumeMount{Name: "vol-signing-key", MountPath: "/etc/tempo-keys", ReadOnly: true}, node.VolumeMounts[2])
+		require.Len(t, pod.Spec.Containers[1].VolumeMounts, 2)
+
+		// Key material must never appear in env vars.
+		for _, env := range node.Env {
+			require.NotContains(t, strings.ToLower(env.Name), "key")
+			require.NotContains(t, strings.ToLower(env.Value), "secret")
+		}
+	})
+
+	t.Run("validator with separate secrets", func(t *testing.T) {
+		crd := defaultValidatorCRD()
+		crd.Spec.SigningKey.EncryptionSecret.Name = "other-secret"
+		pod, err := NewPodBuilder(&crd, testNow).WithOrdinal(0).Build()
+		require.NoError(t, err)
+
+		keyVol := pod.Spec.Volumes[2]
+		require.Len(t, keyVol.Projected.Sources, 2)
+	})
+
+	t.Run("follow override", func(t *testing.T) {
 		crd := defaultCRD()
-		crd.Spec.ChainSpec.HomeDir = ".osmosisd"
-		builder := NewPodBuilder(&crd)
-		pod, err := builder.WithOrdinal(6).Build()
+		crd.Spec.ChainSpec.Follow = ptr(false)
+		pod, err := NewPodBuilder(&crd, testNow).WithOrdinal(0).Build()
 		require.NoError(t, err)
-
-		require.Len(t, pod.Spec.Containers, 2)
-
-		container := pod.Spec.Containers[0]
-		require.Equal(t, "node", container.Name)
-		require.Empty(t, container.ImagePullPolicy)
-		require.Equal(t, crd.Spec.PodTemplate.Resources, container.Resources)
-
-		require.Equal(t, container.Env[0].Name, "HOME")
-		require.Equal(t, container.Env[0].Value, "/home/operator")
-		require.Equal(t, container.Env[1].Name, "CHAIN_HOME")
-		require.Equal(t, container.Env[1].Value, "/home/operator/.osmosisd")
-		require.Equal(t, container.Env[2].Name, "GENESIS_FILE")
-		require.Equal(t, container.Env[2].Value, "/home/operator/.osmosisd/config/genesis.json")
-		require.Equal(t, container.Env[3].Name, "ADDRBOOK_FILE")
-		require.Equal(t, container.Env[3].Value, "/home/operator/.osmosisd/config/addrbook.json")
-		require.Equal(t, container.Env[4].Name, "CONFIG_DIR")
-		require.Equal(t, container.Env[4].Value, "/home/operator/.osmosisd/config")
-		require.Equal(t, container.Env[5].Name, "DATA_DIR")
-		require.Equal(t, container.Env[5].Value, "/home/operator/.osmosisd/data")
-
-		require.NotEmpty(t, pod.Spec.InitContainers)
-
-		for _, c := range pod.Spec.InitContainers {
-			require.Equal(t, container.Env, c.Env, c.Name)
-		}
+		require.NotContains(t, pod.Spec.Containers[0].Args, "--follow")
 	})
 
-	t.Run("volumes", func(t *testing.T) {
+	t.Run("websocket enabled", func(t *testing.T) {
 		crd := defaultCRD()
-		builder := NewPodBuilder(&crd)
-		pod, err := builder.WithOrdinal(5).Build()
+		crd.Spec.RPC.WS = &tempov1alpha1.WSSpec{Enabled: true}
+		pod, err := NewPodBuilder(&crd, testNow).WithOrdinal(0).Build()
 		require.NoError(t, err)
 
-		vols := pod.Spec.Volumes
-		require.Equal(t, 4, len(vols))
+		node := pod.Spec.Containers[0]
+		require.Contains(t, node.Args, "--ws")
+		require.Equal(t, "8546", argsAfterFlag(t, node.Args, "--ws.port"))
 
-		require.Equal(t, "vol-chain-home", vols[0].Name)
-		require.Equal(t, "pvc-osmosis-5", vols[0].PersistentVolumeClaim.ClaimName)
-
-		require.Equal(t, "vol-tmp", vols[1].Name)
-		require.NotNil(t, vols[1].EmptyDir)
-
-		require.Equal(t, "vol-config", vols[2].Name)
-		require.Equal(t, "osmosis-5", vols[2].ConfigMap.Name)
-		wantItems := []corev1.KeyToPath{
-			{Key: "config-overlay.toml", Path: "config-overlay.toml"},
-			{Key: "app-overlay.toml", Path: "app-overlay.toml"},
-			{Key: "node_key.json", Path: "node_key.json"},
+		var wsPort *corev1.ContainerPort
+		for i, p := range node.Ports {
+			if p.Name == "ws" {
+				wsPort = &node.Ports[i]
+			}
 		}
-		require.Equal(t, wantItems, vols[2].ConfigMap.Items)
-
-		// Required for statesync
-		require.Equal(t, "vol-system-tmp", vols[3].Name)
-		require.NotNil(t, vols[3].EmptyDir)
-
-		require.Equal(t, len(pod.Spec.Containers), 2)
-
-		c := pod.Spec.Containers[0]
-		require.Equal(t, "node", c.Name) // Sanity check
-
-		require.Len(t, c.VolumeMounts, 2)
-		mount := c.VolumeMounts[0]
-		require.Equal(t, "vol-chain-home", mount.Name)
-		require.Equal(t, "/home/operator/cosmos", mount.MountPath)
-		require.False(t, mount.ReadOnly)
-
-		mount = c.VolumeMounts[1]
-		require.Equal(t, "vol-system-tmp", mount.Name)
-		require.Equal(t, "/tmp", mount.MountPath)
-		require.False(t, mount.ReadOnly)
-
-		// healtcheck sidecar
-		c = pod.Spec.Containers[1]
-		require.Equal(t, 1, len(c.VolumeMounts))
-		require.Equal(t, "healthcheck", c.Name) // Sanity check
-		mount = c.VolumeMounts[0]
-		require.Equal(t, "vol-chain-home", mount.Name)
-		require.Equal(t, "/home/operator/cosmos", mount.MountPath)
-		require.True(t, mount.ReadOnly)
-
-		for _, c := range pod.Spec.InitContainers {
-			require.Len(t, c.VolumeMounts, 4)
-			mount := c.VolumeMounts[0]
-			require.Equal(t, "vol-chain-home", mount.Name, c.Name)
-			require.Equal(t, "/home/operator/cosmos", mount.MountPath, c.Name)
-
-			mount = c.VolumeMounts[1]
-			require.Equal(t, "vol-system-tmp", mount.Name, c.Name)
-			require.Equal(t, "/tmp", mount.MountPath, c.Name)
-
-			mount = c.VolumeMounts[2]
-			require.Equal(t, "vol-tmp", mount.Name, c.Name)
-			require.Equal(t, "/home/operator/.tmp", mount.MountPath, c.Name)
-
-			mount = c.VolumeMounts[3]
-			require.Equal(t, "vol-config", mount.Name, c.Name)
-			require.Equal(t, "/home/operator/.config", mount.MountPath, c.Name)
-		}
+		require.NotNil(t, wsPort)
+		require.EqualValues(t, 8546, wsPort.ContainerPort)
 	})
 
-	t.Run("start container command", func(t *testing.T) {
-		const defaultHome = "/home/operator/cosmos"
-
-		cmdCrd := defaultCRD()
-		cmdCrd.Spec.ChainSpec.Binary = "gaiad"
-		cmdCrd.Spec.PodTemplate.Image = "ghcr.io/cosmoshub:v1.2.3"
-
-		pod, err := NewPodBuilder(&cmdCrd).WithOrdinal(1).Build()
-		require.NoError(t, err)
-		c := pod.Spec.Containers[0]
-
-		require.Equal(t, "ghcr.io/cosmoshub:v1.2.3", c.Image)
-
-		require.Equal(t, []string{"gaiad"}, c.Command)
-		require.Equal(t, []string{"start", "--home", defaultHome}, c.Args)
-
-		cmdCrd.Spec.ChainSpec.SkipInvariants = true
-		pod, err = NewPodBuilder(&cmdCrd).WithOrdinal(1).Build()
-		require.NoError(t, err)
-		c = pod.Spec.Containers[0]
-
-		require.Equal(t, []string{"gaiad"}, c.Command)
-		require.Equal(t, []string{"start", "--home", defaultHome, "--x-crisis-skip-assert-invariants"}, c.Args)
-
-		cmdCrd.Spec.ChainSpec.LogLevel = ptr("debug")
-		cmdCrd.Spec.ChainSpec.LogFormat = ptr("json")
-		pod, err = NewPodBuilder(&cmdCrd).WithOrdinal(1).Build()
-		require.NoError(t, err)
-		c = pod.Spec.Containers[0]
-
-		require.Equal(t, []string{"start", "--home", defaultHome, "--x-crisis-skip-assert-invariants", "--log_level", "debug", "--log_format", "json"}, c.Args)
-
-		cmdCrd.Spec.ChainSpec.HomeDir = ".other"
-		pod, err = NewPodBuilder(&cmdCrd).WithOrdinal(1).Build()
-		require.NoError(t, err)
-
-		c = pod.Spec.Containers[0]
-		require.Equal(t, []string{"start", "--home", "/home/operator/.other", "--x-crisis-skip-assert-invariants", "--log_level", "debug", "--log_format", "json"}, c.Args)
-	})
-
-	t.Run("sentry start container command ", func(t *testing.T) {
-		cmdCrd := defaultCRD()
-		cmdCrd.Spec.ChainSpec.Binary = "gaiad"
-		cmdCrd.Spec.Type = cosmosv1.Sentry
-
-		pod, err := NewPodBuilder(&cmdCrd).WithOrdinal(1).Build()
-		require.NoError(t, err)
-		c := pod.Spec.Containers[0]
-
-		require.Equal(t, []string{"sh"}, c.Command)
-		const wantBody1 = `sleep 10
-gaiad start --home /home/operator/cosmos`
-		require.Equal(t, []string{"-c", wantBody1}, c.Args)
-
-		cmdCrd.Spec.ChainSpec.PrivvalSleepSeconds = ptr(int32(60))
-		pod, err = NewPodBuilder(&cmdCrd).WithOrdinal(1).Build()
-		require.NoError(t, err)
-		c = pod.Spec.Containers[0]
-
-		const wantBody2 = `sleep 60
-gaiad start --home /home/operator/cosmos`
-		require.Equal(t, []string{"-c", wantBody2}, c.Args)
-
-		cmdCrd.Spec.ChainSpec.PrivvalSleepSeconds = ptr(int32(0))
-		pod, err = NewPodBuilder(&cmdCrd).WithOrdinal(1).Build()
-		require.NoError(t, err)
-		c = pod.Spec.Containers[0]
-
-		require.Equal(t, []string{"gaiad"}, c.Command)
-	})
-
-	t.Run("rpc probes", func(t *testing.T) {
+	t.Run("telemetry", func(t *testing.T) {
 		crd := defaultCRD()
-		builder := NewPodBuilder(&crd)
-		pod, err := builder.WithOrdinal(1).Build()
+		crd.Spec.Telemetry.TelemetryURL = ptr("https://telemetry.example.com")
+		crd.Spec.Telemetry.MetricsInterval = &metav1.Duration{Duration: 10 * time.Second}
+		pod, err := NewPodBuilder(&crd, testNow).WithOrdinal(0).Build()
 		require.NoError(t, err)
 
-		want := &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{
-					Path:   "/health",
-					Port:   intstr.FromInt(26657),
-					Scheme: "HTTP",
-				},
-			},
-			InitialDelaySeconds: 1,
-			TimeoutSeconds:      10,
-			PeriodSeconds:       10,
-			SuccessThreshold:    1,
-			FailureThreshold:    5,
-		}
-		got := pod.Spec.Containers[0].ReadinessProbe
-
-		require.Equal(t, want, got)
-
-		want = &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{
-					Path:   "/",
-					Port:   intstr.FromInt(1251),
-					Scheme: "HTTP",
-				},
-			},
-			InitialDelaySeconds: 1,
-			TimeoutSeconds:      10,
-			PeriodSeconds:       10,
-			SuccessThreshold:    1,
-			FailureThreshold:    3,
-		}
-		got = pod.Spec.Containers[1].ReadinessProbe
-
-		require.Equal(t, want, got)
+		node := pod.Spec.Containers[0]
+		require.Equal(t, "https://telemetry.example.com", argsAfterFlag(t, node.Args, "--telemetry-url"))
+		require.Equal(t, "10s", argsAfterFlag(t, node.Args, "--telemetry-metrics-interval"))
 	})
 
-	t.Run("probe strategy", func(t *testing.T) {
+	t.Run("telemetry url from secret", func(t *testing.T) {
 		crd := defaultCRD()
-		crd.Spec.PodTemplate.Probes = cosmosv1.FullNodeProbesSpec{Strategy: cosmosv1.FullNodeProbeStrategyNone}
-
-		builder := NewPodBuilder(&crd)
-		pod, err := builder.WithOrdinal(1).Build()
-		require.NoError(t, err)
-
-		for i, cont := range pod.Spec.Containers {
-			require.Nilf(t, cont.ReadinessProbe, "container %d", i)
+		crd.Spec.Telemetry.TelemetryURL = ptr("https://should-not-see-me.example.com")
+		crd.Spec.Telemetry.TelemetryURLSecret = &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: "telemetry"},
+			Key:                  "url",
 		}
-
-		require.Equal(t, 2, len(pod.Spec.Containers))
-		require.Equal(t, "node", pod.Spec.Containers[0].Name)
-
-		sidecar := pod.Spec.Containers[1]
-		require.Equal(t, "healthcheck", sidecar.Name)
-		require.Nil(t, sidecar.ReadinessProbe)
-
-		crd.Spec.PodTemplate.Probes = cosmosv1.FullNodeProbesSpec{Strategy: cosmosv1.FullNodeProbeStrategyReachable}
-
-		builder = NewPodBuilder(&crd)
-		pod, err = builder.WithOrdinal(1).Build()
+		pod, err := NewPodBuilder(&crd, testNow).WithOrdinal(0).Build()
 		require.NoError(t, err)
 
-		require.NotNilf(t, pod.Spec.Containers[0].ReadinessProbe, "container 0")
-		require.Nilf(t, pod.Spec.Containers[1].ReadinessProbe, "container 1")
+		node := pod.Spec.Containers[0]
+		// The literal URL never lands in args; k8s expands $(VAR) from env.
+		require.Equal(t, "$(TEMPO_TELEMETRY_URL)", argsAfterFlag(t, node.Args, "--telemetry-url"))
 
-		crd.Spec.PodTemplate.Probes = cosmosv1.FullNodeProbesSpec{Strategy: cosmosv1.FullNodeProbeStrategyInSync}
-
-		builder = NewPodBuilder(&crd)
-		pod, err = builder.WithOrdinal(1).Build()
-		require.NoError(t, err)
-
-		require.NotNilf(t, pod.Spec.Containers[0].ReadinessProbe, "container 0")
-		require.NotNilf(t, pod.Spec.Containers[1].ReadinessProbe, "container 1")
+		var found bool
+		for _, env := range node.Env {
+			if env.Name == "TEMPO_TELEMETRY_URL" {
+				found = true
+				require.Equal(t, "telemetry", env.ValueFrom.SecretKeyRef.Name)
+			}
+		}
+		require.True(t, found)
 	})
 
-	t.Run("strategic merge fields", func(t *testing.T) {
+	t.Run("additional args appended last", func(t *testing.T) {
 		crd := defaultCRD()
-		crd.Spec.PodTemplate.Volumes = []corev1.Volume{
-			{Name: "foo-vol", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-		}
-		crd.Spec.PodTemplate.InitContainers = []corev1.Container{
-			{Name: "chain-init", Image: "foo:latest", VolumeMounts: []corev1.VolumeMount{
-				{Name: "foo-vol", MountPath: "/foo"}, // Should be merged with existing.
-			}},
-			{Name: "new-init", Image: "new-init:latest"}, // New container.
-		}
-		crd.Spec.PodTemplate.Containers = []corev1.Container{
-			{Name: "node", VolumeMounts: []corev1.VolumeMount{
-				{Name: "foo-vol", MountPath: "/foo"}, // Should be merged with existing.
-			}},
-			{Name: "new-sidecar", Image: "new-sidecar:latest"}, // New container.
-		}
-
-		builder := NewPodBuilder(&crd)
-		pod, err := builder.WithOrdinal(0).Build()
+		crd.Spec.ChainSpec.AdditionalArgs = []string{"--custom-flag", "value"}
+		pod, err := NewPodBuilder(&crd, testNow).WithOrdinal(0).Build()
 		require.NoError(t, err)
 
-		vols := lo.SliceToMap(pod.Spec.Volumes, func(v corev1.Volume) (string, corev1.Volume) { return v.Name, v })
-		require.ElementsMatch(t, []string{"foo-vol", "vol-tmp", "vol-system-tmp", "vol-config", "vol-chain-home"}, lo.Keys(vols))
-		require.Equal(t, &corev1.EmptyDirVolumeSource{}, vols["foo-vol"].VolumeSource.EmptyDir)
-
-		containers := lo.SliceToMap(pod.Spec.Containers, func(c corev1.Container) (string, corev1.Container) { return c.Name, c })
-		require.ElementsMatch(t, []string{"node", "new-sidecar", "healthcheck"}, lo.Keys(containers))
-
-		extraVol := lo.Filter(containers["node"].VolumeMounts, func(vm corev1.VolumeMount, _ int) bool { return vm.Name == "foo-vol" })
-		require.Equal(t, "/foo", extraVol[0].MountPath)
-
-		initConts := lo.SliceToMap(pod.Spec.InitContainers, func(c corev1.Container) (string, corev1.Container) { return c.Name, c })
-		require.ElementsMatch(t, []string{"clean-init", "chain-init", "new-init", "genesis-init", "addrbook-init", "config-merge", "version-check"}, lo.Keys(initConts))
-		require.Equal(t, "foo:latest", initConts["chain-init"].Image)
+		args := pod.Spec.Containers[0].Args
+		require.Equal(t, []string{"--custom-flag", "value"}, args[len(args)-2:])
 	})
 
-	t.Run("containers with chain spec versions", func(t *testing.T) {
+	t.Run("custom ports", func(t *testing.T) {
 		crd := defaultCRD()
-		crd.Spec.PodTemplate.Volumes = []corev1.Volume{
-			{Name: "foo-vol", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		crd.Spec.P2P.Port = ptr(int32(40404))
+		crd.Spec.RPC.Port = ptr(int32(9545))
+		crd.Spec.Telemetry.MetricsPort = ptr(int32(9100))
+		pod, err := NewPodBuilder(&crd, testNow).WithOrdinal(0).Build()
+		require.NoError(t, err)
+
+		node := pod.Spec.Containers[0]
+		require.Equal(t, "40404", argsAfterFlag(t, node.Args, "--port"))
+		require.Equal(t, "9545", argsAfterFlag(t, node.Args, "--http.port"))
+		require.Equal(t, "9100", argsAfterFlag(t, node.Args, "--metrics"))
+		require.Equal(t, []string{"/manager", "healthcheck", "--rpc-host", "http://localhost:9545"}, pod.Spec.Containers[1].Command)
+	})
+
+	t.Run("probes", func(t *testing.T) {
+		crd := defaultCRD()
+		pod, err := NewPodBuilder(&crd, testNow).WithOrdinal(0).Build()
+		require.NoError(t, err)
+
+		// Default InSync: main probe on /health, sidecar probe on /.
+		require.Equal(t, "/health", pod.Spec.Containers[0].ReadinessProbe.HTTPGet.Path)
+		require.EqualValues(t, 8545, pod.Spec.Containers[0].ReadinessProbe.HTTPGet.Port.IntValue())
+		require.Equal(t, "/", pod.Spec.Containers[1].ReadinessProbe.HTTPGet.Path)
+		require.EqualValues(t, 1251, pod.Spec.Containers[1].ReadinessProbe.HTTPGet.Port.IntValue())
+
+		crd.Spec.PodTemplate.Probes.Strategy = tempov1alpha1.ProbeStrategyReachable
+		pod, err = NewPodBuilder(&crd, testNow).WithOrdinal(0).Build()
+		require.NoError(t, err)
+		require.NotNil(t, pod.Spec.Containers[0].ReadinessProbe)
+		require.Nil(t, pod.Spec.Containers[1].ReadinessProbe)
+
+		crd.Spec.PodTemplate.Probes.Strategy = tempov1alpha1.ProbeStrategyNone
+		pod, err = NewPodBuilder(&crd, testNow).WithOrdinal(0).Build()
+		require.NoError(t, err)
+		require.Nil(t, pod.Spec.Containers[0].ReadinessProbe)
+		require.Nil(t, pod.Spec.Containers[1].ReadinessProbe)
+	})
+
+	t.Run("exec volume ephemeral", func(t *testing.T) {
+		crd := defaultCRD()
+		crd.Spec.ExecVolume.Ephemeral = &corev1.EphemeralVolumeSource{
+			VolumeClaimTemplate: &corev1.PersistentVolumeClaimTemplate{},
 		}
-		crd.Spec.PodTemplate.InitContainers = []corev1.Container{
-			{Name: "chain-init", Image: "foo:latest", VolumeMounts: []corev1.VolumeMount{
-				{Name: "foo-vol", MountPath: "/foo"}, // Should be merged with existing.
-			}},
-			{Name: "new-init", Image: "new-init:latest"}, // New container.
-		}
-		crd.Spec.PodTemplate.Containers = []corev1.Container{
-			{Name: "node", VolumeMounts: []corev1.VolumeMount{
-				{Name: "foo-vol", MountPath: "/foo"}, // Should be merged with existing.
-			}},
-			{Name: "new-sidecar", Image: "new-sidecar:latest"}, // New container.
-		}
-		crd.Spec.ChainSpec.Versions = []cosmosv1.ChainVersion{
+		pod, err := NewPodBuilder(&crd, testNow).WithOrdinal(0).Build()
+		require.NoError(t, err)
+		require.NotNil(t, pod.Spec.Volumes[0].Ephemeral)
+		require.Nil(t, pod.Spec.Volumes[0].EmptyDir)
+	})
+
+	t.Run("exec volume emptyDir size limit", func(t *testing.T) {
+		crd := defaultCRD()
+		limit := resource.MustParse("1500Gi")
+		crd.Spec.ExecVolume.EmptyDir = &corev1.EmptyDirVolumeSource{SizeLimit: &limit}
+		pod, err := NewPodBuilder(&crd, testNow).WithOrdinal(0).Build()
+		require.NoError(t, err)
+		require.Equal(t, "1500Gi", pod.Spec.Volumes[0].EmptyDir.SizeLimit.String())
+	})
+
+	t.Run("scheduled upgrade image", func(t *testing.T) {
+		crd := defaultCRD()
+		crd.Spec.ScheduledUpgrades = []tempov1alpha1.ScheduledUpgrade{
 			{
-				UpgradeHeight: 0,
-				Image:         "image:v1.0.0",
-			},
-			{
-				UpgradeHeight: 100,
-				Image:         "image:v2.0.0",
-			},
-			{
-				UpgradeHeight: 300,
-				Image:         "image:v3.0.0",
-				InitContainers: map[string]string{
-					"chain-init": "chain-init:v3.0.0",
-					"new-init":   "new-init:v3.0.0",
-				},
-				Containers: map[string]string{
-					"new-sidecar": "new-sidecar:v3.0.0",
-				},
-			},
-			{
-				UpgradeHeight: 400,
-				Image:         "image:v4.0.0",
+				ActivatesAt: metav1.NewTime(testNow.Add(3 * time.Hour)),
+				Image:       "ghcr.io/tempoxyz/tempo:v2.0.0",
 			},
 		}
 
-		crd.Status.Height = map[string]uint64{
-			"osmosis-0": 1,
-			"osmosis-1": 150,
-			"osmosis-2": 300,
+		// Inside the default 6h lead window: the new image applies to node AND init container.
+		pod, err := NewPodBuilder(&crd, testNow).WithOrdinal(0).Build()
+		require.NoError(t, err)
+		require.Equal(t, "ghcr.io/tempoxyz/tempo:v2.0.0", pod.Spec.Containers[0].Image)
+		require.Equal(t, "ghcr.io/tempoxyz/tempo:v2.0.0", pod.Spec.InitContainers[0].Image)
+
+		// Before the lead window: old image.
+		pod, err = NewPodBuilder(&crd, testNow.Add(-4*time.Hour)).WithOrdinal(0).Build()
+		require.NoError(t, err)
+		require.Equal(t, "ghcr.io/tempoxyz/tempo:v1.2.3", pod.Spec.Containers[0].Image)
+	})
+
+	t.Run("instance overrides", func(t *testing.T) {
+		crd := defaultCRD()
+		crd.Spec.InstanceOverrides = map[string]tempov1alpha1.InstanceOverridesSpec{
+			"osmosis-0": {Image: "ghcr.io/tempoxyz/tempo:override"},
+			"osmosis-1": {DisableStrategy: ptr(tempov1alpha1.DisablePod)},
+			"osmosis-2": {NodeSelector: map[string]string{"pool": "special"}},
 		}
 
-		builder := NewPodBuilder(&crd)
+		builder := NewPodBuilder(&crd, testNow)
 
 		pod0, err := builder.WithOrdinal(0).Build()
 		require.NoError(t, err)
-
-		containers := lo.SliceToMap(pod0.Spec.Containers, func(c corev1.Container) (string, corev1.Container) { return c.Name, c })
-		require.ElementsMatch(t, []string{"node", "new-sidecar", "healthcheck", "version-check-interval"}, lo.Keys(containers))
-
-		initContainers := lo.SliceToMap(pod0.Spec.InitContainers, func(c corev1.Container) (string, corev1.Container) { return c.Name, c })
-		require.ElementsMatch(t, []string{"chain-init", "new-init", "genesis-init", "addrbook-init", "config-merge", "version-check", "clean-init"}, lo.Keys(initContainers))
-
-		require.Equal(t, "osmosis-0", pod0.Name)
-
-		require.Equal(t, "node", pod0.Spec.Containers[0].Name)
-		require.Equal(t, "image:v1.0.0", pod0.Spec.Containers[0].Image)
-
-		require.Equal(t, "chain-init", pod0.Spec.InitContainers[1].Name)
-		require.Equal(t, "image:v1.0.0", pod0.Spec.InitContainers[1].Image)
+		require.Equal(t, "ghcr.io/tempoxyz/tempo:override", pod0.Spec.Containers[0].Image)
+		require.Equal(t, "ghcr.io/tempoxyz/tempo:override", pod0.Spec.InitContainers[0].Image)
 
 		pod1, err := builder.WithOrdinal(1).Build()
 		require.NoError(t, err)
-
-		require.Equal(t, "osmosis-1", pod1.Name)
-
-		require.Equal(t, "node", pod1.Spec.Containers[0].Name)
-		require.Equal(t, "image:v2.0.0", pod1.Spec.Containers[0].Image)
-
-		require.Equal(t, "chain-init", pod1.Spec.InitContainers[1].Name)
-		require.Equal(t, "image:v2.0.0", pod1.Spec.InitContainers[1].Image)
+		require.Nil(t, pod1)
 
 		pod2, err := builder.WithOrdinal(2).Build()
 		require.NoError(t, err)
+		require.Equal(t, map[string]string{"pool": "special"}, pod2.Spec.NodeSelector)
+	})
 
-		require.Equal(t, "osmosis-2", pod2.Name)
+	t.Run("strategic merge pod patch", func(t *testing.T) {
+		crd := defaultCRD()
+		crd.Spec.PodTemplate.Volumes = []corev1.Volume{
+			{Name: "extra-vol", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		}
+		crd.Spec.PodTemplate.NodeSelector = map[string]string{"disk": "local-nvme"}
+		crd.Spec.PodTemplate.TerminationGracePeriodSeconds = ptr(int64(120))
 
-		require.Equal(t, "node", pod2.Spec.Containers[0].Name)
-		require.Equal(t, "image:v3.0.0", pod2.Spec.Containers[0].Image)
-
-		require.Equal(t, "new-sidecar", pod2.Spec.Containers[1].Name)
-		require.Equal(t, "new-sidecar:v3.0.0", pod2.Spec.Containers[1].Image)
-
-		require.Equal(t, "chain-init", pod2.Spec.InitContainers[1].Name)
-		require.Equal(t, "chain-init:v3.0.0", pod2.Spec.InitContainers[1].Image)
-
-		require.Equal(t, "new-init", pod2.Spec.InitContainers[2].Name)
-		require.Equal(t, "new-init:v3.0.0", pod2.Spec.InitContainers[2].Image)
-
-		crd.Status.Height["osmosis-2"] = 400
-		pod2, err = builder.WithOrdinal(2).Build()
+		pod, err := NewPodBuilder(&crd, testNow).WithOrdinal(0).Build()
 		require.NoError(t, err)
 
-		require.Equal(t, "osmosis-2", pod2.Name)
+		volNames := make([]string, 0)
+		for _, v := range pod.Spec.Volumes {
+			volNames = append(volNames, v.Name)
+		}
+		require.Contains(t, volNames, "extra-vol")
+		require.Contains(t, volNames, "vol-exec-data")
+		require.Equal(t, map[string]string{"disk": "local-nvme"}, pod.Spec.NodeSelector)
+		require.EqualValues(t, 120, *pod.Spec.TerminationGracePeriodSeconds)
+	})
 
-		require.Equal(t, "node", pod2.Spec.Containers[0].Name)
-		require.Equal(t, "image:v4.0.0", pod2.Spec.Containers[0].Image)
+	t.Run("long names", func(t *testing.T) {
+		crd := defaultCRD()
+		crd.Name = strings.Repeat("Y", 300)
+		pod, err := NewPodBuilder(&crd, testNow).WithOrdinal(0).Build()
+		require.NoError(t, err)
+		test.RequireValidMetadata(t, pod)
+	})
 
-		require.Equal(t, "new-sidecar", pod2.Spec.Containers[1].Name)
-		require.Equal(t, "new-sidecar:latest", pod2.Spec.Containers[1].Image)
-
-		require.Equal(t, "chain-init", pod2.Spec.InitContainers[1].Name)
-		require.Equal(t, "image:v4.0.0", pod2.Spec.InitContainers[1].Image)
-
-		require.Equal(t, "new-init", pod2.Spec.InitContainers[2].Name)
-		require.Equal(t, "new-init:latest", pod2.Spec.InitContainers[2].Image)
+	t.Run("PVCName", func(t *testing.T) {
+		crd := defaultCRD()
+		pod, err := NewPodBuilder(&crd, testNow).WithOrdinal(3).Build()
+		require.NoError(t, err)
+		require.Equal(t, "pvc-osmosis-3", PVCName(pod))
 	})
 }
 
-func TestChainHomeDir(t *testing.T) {
-	crd := defaultCRD()
-	require.Equal(t, "/home/operator/cosmos", ChainHomeDir(&crd))
+func TestInitContainers(t *testing.T) {
+	t.Parallel()
 
-	crd.Spec.ChainSpec.HomeDir = ".gaia"
-	require.Equal(t, "/home/operator/.gaia", ChainHomeDir(&crd))
-}
+	t.Run("auto policy is idempotent", func(t *testing.T) {
+		crd := defaultCRD()
+		pod, err := NewPodBuilder(&crd, testNow).WithOrdinal(0).Build()
+		require.NoError(t, err)
 
-func TestPVCName(t *testing.T) {
-	crd := defaultCRD()
-	builder := NewPodBuilder(&crd)
-	pod, err := builder.WithOrdinal(5).Build()
-	require.NoError(t, err)
+		require.Len(t, pod.Spec.InitContainers, 1)
+		init := pod.Spec.InitContainers[0]
+		require.Equal(t, "snapshot-init", init.Name)
+		require.Equal(t, crd.Spec.PodTemplate.Image, init.Image)
+		require.Equal(t, []string{"sh"}, init.Command)
 
-	require.Equal(t, "pvc-osmosis-5", PVCName(pod))
+		script := init.Args[1]
+		// Populated-datadir check preserves node identity files.
+		require.Contains(t, script, "discovery-secret")
+		require.Contains(t, script, "known-peers.json")
+		require.Contains(t, script, "tempo download --chain mainnet --datadir "+ExecDataDir)
+		// rpc role defaults to the full profile.
+		require.Contains(t, script, "--full")
+		require.Contains(t, script, "--non-interactive")
+		require.NotContains(t, script, "--force")
 
-	pod.Spec.Volumes = append([]corev1.Volume{{Name: "foo"}}, pod.Spec.Volumes...)
+		// Only mounts the exec datadir; never touches consensus or key material.
+		require.Equal(t, []corev1.VolumeMount{{Name: "vol-exec-data", MountPath: ExecDataDir}}, init.VolumeMounts)
+	})
 
-	require.Equal(t, "pvc-osmosis-5", PVCName(pod))
+	t.Run("always policy forces refresh", func(t *testing.T) {
+		crd := defaultCRD()
+		crd.Spec.SnapshotInit.Policy = tempov1alpha1.SnapshotInitAlways
+		pod, err := NewPodBuilder(&crd, testNow).WithOrdinal(0).Build()
+		require.NoError(t, err)
+
+		script := pod.Spec.InitContainers[0].Args[1]
+		require.Contains(t, script, "--force")
+		// No populated-dir short circuit when forcing.
+		require.NotContains(t, script, "already populated")
+	})
+
+	t.Run("never policy omits init container", func(t *testing.T) {
+		crd := defaultCRD()
+		crd.Spec.SnapshotInit.Policy = tempov1alpha1.SnapshotInitNever
+		pod, err := NewPodBuilder(&crd, testNow).WithOrdinal(0).Build()
+		require.NoError(t, err)
+		require.Empty(t, pod.Spec.InitContainers)
+	})
+
+	t.Run("profile defaults by role", func(t *testing.T) {
+		for role, want := range map[tempov1alpha1.NodeRole]string{
+			tempov1alpha1.NodeRoleRPC:     "--full",
+			tempov1alpha1.NodeRoleArchive: "--archive",
+		} {
+			crd := defaultCRD()
+			crd.Spec.Role = role
+			pod, err := NewPodBuilder(&crd, testNow).WithOrdinal(0).Build()
+			require.NoError(t, err)
+			require.Contains(t, pod.Spec.InitContainers[0].Args[1], want, role)
+		}
+
+		crd := defaultValidatorCRD()
+		pod, err := NewPodBuilder(&crd, testNow).WithOrdinal(0).Build()
+		require.NoError(t, err)
+		require.Contains(t, pod.Spec.InitContainers[0].Args[1], "--minimal")
+	})
+
+	t.Run("profile override", func(t *testing.T) {
+		crd := defaultCRD()
+		crd.Spec.SnapshotInit.Profile = ptr(tempov1alpha1.SnapshotProfileMinimal)
+		pod, err := NewPodBuilder(&crd, testNow).WithOrdinal(0).Build()
+		require.NoError(t, err)
+		require.Contains(t, pod.Spec.InitContainers[0].Args[1], "--minimal")
+	})
+
+	t.Run("url and manifest overrides with additional args", func(t *testing.T) {
+		crd := defaultCRD()
+		crd.Spec.SnapshotInit.URL = ptr("https://snapshots.example.com/latest")
+		crd.Spec.SnapshotInit.ManifestURL = ptr("https://snapshots.example.com/manifest.json")
+		crd.Spec.ChainSpec.AdditionalDownloadArgs = []string{"--extra"}
+		pod, err := NewPodBuilder(&crd, testNow).WithOrdinal(0).Build()
+		require.NoError(t, err)
+
+		script := pod.Spec.InitContainers[0].Args[1]
+		require.Contains(t, script, "--url https://snapshots.example.com/latest")
+		require.Contains(t, script, "--manifest-url https://snapshots.example.com/manifest.json")
+		require.Contains(t, script, "--extra")
+	})
 }

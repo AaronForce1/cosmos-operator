@@ -1,7 +1,7 @@
 package kube
 
 import (
-	cosmosv1 "github.com/strangelove-ventures/cosmos-operator/api/v1"
+	tempov1alpha1 "github.com/aaronforce1/cosmos-operator/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -11,7 +11,7 @@ import (
 // Indexing is required for client.Client methods such as listing resources.
 //
 // It returns a field to index only if all are true:
-// 1) resource is part of cosmosv1.GroupVersion.
+// 1) resource is part of tempov1alpha1.GroupVersion.
 // 2) resource is owned by a controller equal to "kind".
 func IndexOwner[T client.Object](kind string) client.IndexerFunc {
 	return func(object client.Object) []string {
@@ -20,7 +20,7 @@ func IndexOwner[T client.Object](kind string) client.IndexerFunc {
 		if owner == nil {
 			return nil
 		}
-		if owner.APIVersion != cosmosv1.GroupVersion.String() || owner.Kind != kind {
+		if owner.APIVersion != tempov1alpha1.GroupVersion.String() || owner.Kind != kind {
 			return nil
 		}
 		return []string{owner.Name}

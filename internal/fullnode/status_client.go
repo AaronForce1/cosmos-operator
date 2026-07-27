@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	cosmosv1 "github.com/strangelove-ventures/cosmos-operator/api/v1"
+	tempov1alpha1 "github.com/aaronforce1/cosmos-operator/api/v1alpha1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -39,12 +39,12 @@ func NewStatusClient(c client.Client) *StatusClient {
 //
 // Server-side-apply, in theory, would be a solution. During testing, however, it resulted in many conflict errors
 // and would require non-trivial migration to clear existing deployment's metadata.managedFields.
-func (client *StatusClient) SyncUpdate(ctx context.Context, key client.ObjectKey, update func(status *cosmosv1.FullNodeStatus)) error {
+func (client *StatusClient) SyncUpdate(ctx context.Context, key client.ObjectKey, update func(status *tempov1alpha1.TempoFullNodeStatus)) error {
 	sem, _ := client.sems.LoadOrStore(key, newSem())
 	sem.(semaphore).Acquire()
 	defer sem.(semaphore).Release()
 
-	var crd cosmosv1.CosmosFullNode
+	var crd tempov1alpha1.TempoFullNode
 	if err := client.client.Get(ctx, key, &crd); err != nil {
 		return err
 	}

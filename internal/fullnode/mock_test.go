@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sync"
 
+	tempov1alpha1 "github.com/aaronforce1/cosmos-operator/api/v1alpha1"
 	snapshotv1 "github.com/kubernetes-csi/external-snapshotter/client/v6/apis/volumesnapshot/v1"
-	cosmosv1 "github.com/strangelove-ventures/cosmos-operator/api/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -57,8 +57,8 @@ func (m *mockClient[T]) Get(ctx context.Context, key client.ObjectKey, obj clien
 		*ref = m.Object.(corev1.ConfigMap)
 	case *corev1.PersistentVolumeClaim:
 		*ref = m.Object.(corev1.PersistentVolumeClaim)
-	case *cosmosv1.CosmosFullNode:
-		*ref = m.Object.(cosmosv1.CosmosFullNode)
+	case *tempov1alpha1.TempoFullNode:
+		*ref = m.Object.(tempov1alpha1.TempoFullNode)
 	case *snapshotv1.VolumeSnapshot:
 		*ref = m.Object.(snapshotv1.VolumeSnapshot)
 	default:
@@ -160,7 +160,7 @@ func (m *mockClient[T]) Scheme() *runtime.Scheme {
 	defer m.mu.Unlock()
 
 	scheme := runtime.NewScheme()
-	if err := cosmosv1.AddToScheme(scheme); err != nil {
+	if err := tempov1alpha1.AddToScheme(scheme); err != nil {
 		panic(err)
 	}
 	return scheme

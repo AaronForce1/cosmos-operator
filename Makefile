@@ -2,7 +2,7 @@
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
-ENVTEST_K8S_VERSION = 1.24.1
+ENVTEST_K8S_VERSION = 1.28.3
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -42,7 +42,8 @@ help: ## Display this help.
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
-	go run tools/minify-crd.go -v -o config/crd/bases/cosmos.strange.love_cosmosfullnodes.yaml
+	go run tools/minify-crd.go -v -o config/crd/bases/tempo.aaronforce.io_tempofullnodes.yaml
+	cp config/crd/bases/tempo.aaronforce.io_tempofullnodes.yaml charts/tempo-operator/crds/
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
@@ -54,12 +55,19 @@ gen-api: ## Generate new API resource. VERSION defaults to "v1". E.g. make gen-a
 ifndef KIND
 	$(error KIND is not defined; e.g. KIND="CosmosMyNewResource")
 endif
-	@kubebuilder create api --group cosmos --kind $(KIND) --version $(VERSION)
+	@kubebuilder create api --group tempo --kind $(KIND) --version $(VERSION)
 
-CHAIN_NAME ?= $(error Please set CHAIN_NAME)
-.PHONY: latest-snapshot
-latest-snapshot: ## Get latest snapshot from polkachu. Must set CHAIN_NAME flag or env var.
-	@curl -s https://polkachu.com/api/v1/chains/$(CHAIN_NAME)/snapshot | jq -r '.snapshot.url' | tr -d "\n"
+.PHONY: fmt
+fmt: ## Run gofmt against code.
+	gofmt -w .
+
+.PHONY: vet
+vet: ## Run go vet against code.
+	go vet ./...
+
+.PHONY: lint
+lint: ## Run golangci-lint against code.
+	golangci-lint run ./...
 
 .PHONY: test
 test: manifests generate ## Run unit tests.
@@ -68,6 +76,38 @@ ifndef SKIP_TEST
 else
 	echo "Warning: SKIP_TEST=$(SKIP_TEST). Skipping all tests!"
 endif
+
+.PHONY: test-envtest
+test-envtest: manifests generate envtest ## Run controller tests against a real kube-apiserver via envtest.
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN)/envtest -p path)" go test -count=1 -timeout=300s ./controllers/...
+
+.PHONY: test-e2e
+test-e2e: ## Run e2e tests against the cluster in KUBECONFIG (CRD + operator must be running).
+	go test -tags e2e -count=1 -timeout=60m -v ./test/e2e/...
+
+.PHONY: test-e2e-kind
+test-e2e-kind: ## Create a kind cluster, run the operator locally, and execute the e2e suite.
+	./test/e2e/kind.sh
+
+##@ Local Development (kind)
+
+.PHONY: dev-up
+dev-up: ## Create a kind cluster, build the operator image, and helm-install CRD + operator.
+	./hack/dev-up.sh
+
+.PHONY: dev-sample
+dev-sample: ## Deploy a TempoFullNode syncing against the moderato testnet.
+	kubectl apply -f config/samples/tempo_v1alpha1_tempofullnode_testnet.yaml
+	@echo "Watch with: kubectl get tempofullnodes -w ; kubectl get pods -w"
+
+.PHONY: dev-down
+dev-down: ## Delete the local development kind cluster.
+	./hack/dev-down.sh
+
+.PHONY: helm-lint
+helm-lint: ## Lint and render the Helm chart.
+	helm lint charts/tempo-operator
+	helm template smoke charts/tempo-operator > /dev/null
 
 .PHONY: tools
 tools: ## Install dev tools.
@@ -88,7 +128,7 @@ build: generate ## Build manager binary.
 run: manifests generate ## Run a controller from your host.
 	go run . --log-level=debug
 
-PRE_IMG ?= ghcr.io/strangelove-ventures/cosmos-operator:dev$(shell git describe --always --dirty)
+PRE_IMG ?= ghcr.io/aaronforce1/tempo-operator:dev$(shell git describe --always --dirty)
 .PHONY: docker-prerelease
 docker-prerelease: ## Build and push a prerelease docker image.
 	IMG=$(PRE_IMG) $(MAKE) docker-build docker-push
@@ -121,7 +161,7 @@ deploy-prerelease: install docker-prerelease ## Install CRDs, build docker image
 	cd config/manager && $(KUSTOMIZE) edit set image controller=$(PRE_IMG)
 	$(KUSTOMIZE) build config/default | kubectl apply -f -
 	@#Hack to reset tag to avoid git thrashing.
-	@cd config/manager && $(KUSTOMIZE) edit set image controller=ghcr.io/strangelove-ventures/cosmos-operator:latest
+	@cd config/manager && $(KUSTOMIZE) edit set image controller=ghcr.io/aaronforce1/tempo-operator:latest
 
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.

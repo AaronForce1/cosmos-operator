@@ -1,56 +1,54 @@
 package fullnode
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
-	"path"
 	"strings"
-	"sync"
+	"time"
 
-	"github.com/samber/lo"
-	cosmosv1 "github.com/strangelove-ventures/cosmos-operator/api/v1"
-	"github.com/strangelove-ventures/cosmos-operator/internal/healthcheck"
-	"github.com/strangelove-ventures/cosmos-operator/internal/kube"
-	"github.com/strangelove-ventures/cosmos-operator/internal/version"
+	tempov1alpha1 "github.com/aaronforce1/cosmos-operator/api/v1alpha1"
+	"github.com/aaronforce1/cosmos-operator/internal/healthcheck"
+	"github.com/aaronforce1/cosmos-operator/internal/kube"
+	"github.com/aaronforce1/cosmos-operator/internal/version"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
-var bufPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
-
 const (
-	healthCheckPort    = healthcheck.Port
-	mainContainer      = "node"
-	chainInitContainer = "chain-init"
+	healthCheckPort = healthcheck.Port
+	mainContainer   = "node"
+
+	// snapshotInitContainer downloads a chain snapshot into the exec datadir via `tempo download`.
+	snapshotInitContainer = "snapshot-init"
+
+	// operatorImageRepo hosts the operator's own image, used for the healthcheck sidecar.
+	operatorImageRepo = "ghcr.io/aaronforce1/tempo-operator"
 )
 
 // PodBuilder builds corev1.Pods
 type PodBuilder struct {
-	crd *cosmosv1.CosmosFullNode
+	crd *tempov1alpha1.TempoFullNode
 	pod *corev1.Pod
 }
 
 // NewPodBuilder returns a valid PodBuilder.
 //
-// Panics if any argument is nil.
-func NewPodBuilder(crd *cosmosv1.CosmosFullNode) PodBuilder {
+// The "now" argument selects the image from spec.scheduledUpgrades (timestamp-activated
+// hardforks); pass time.Now() outside of tests.
+//
+// Panics if crd is nil.
+func NewPodBuilder(crd *tempov1alpha1.TempoFullNode, now time.Time) PodBuilder {
 	if crd == nil {
-		panic(errors.New("nil CosmosFullNode"))
+		panic(errors.New("nil TempoFullNode"))
 	}
 
 	var (
-		tpl                 = crd.Spec.PodTemplate
-		startCmd, startArgs = startCmdAndArgs(crd)
-		probes              = podReadinessProbes(crd)
+		tpl    = crd.Spec.PodTemplate
+		image  = DesiredImage(crd, now)
+		probes = podReadinessProbes(crd)
 	)
-
-	versionCheckCmd := []string{"/manager", "versioncheck", "-d"}
-	if crd.Spec.ChainSpec.DatabaseBackend != nil {
-		versionCheckCmd = append(versionCheckCmd, "-b", *crd.Spec.ChainSpec.DatabaseBackend)
-	}
 
 	pod := corev1.Pod{
 		TypeMeta: metav1.TypeMeta{
@@ -63,7 +61,7 @@ func NewPodBuilder(crd *cosmosv1.CosmosFullNode) PodBuilder {
 			Annotations: make(map[string]string),
 		},
 		Spec: corev1.PodSpec{
-			ServiceAccountName: serviceAccountName(crd),
+			ServiceAccountName: crd.Spec.ServiceAccountName,
 			SecurityContext: &corev1.PodSecurityContext{
 				RunAsUser:           ptr(int64(1025)),
 				RunAsGroup:          ptr(int64(1025)),
@@ -74,15 +72,12 @@ func NewPodBuilder(crd *cosmosv1.CosmosFullNode) PodBuilder {
 			},
 			Subdomain: crd.Name,
 			Containers: []corev1.Container{
-				// Main start container.
+				// Main node container: single tempo process (reth execution + Commonware consensus).
 				{
-					Name:  mainContainer,
-					Image: tpl.Image,
-					// The following is a useful hack if you need to inspect the PV.
-					//Command: []string{"/bin/sh"},
-					//Args:    []string{"-c", `trap : TERM INT; sleep infinity & wait`},
-					Command:         []string{startCmd},
-					Args:            startArgs,
+					Name:            mainContainer,
+					Image:           image,
+					Command:         []string{"tempo"},
+					Args:            nodeArgs(crd),
 					Env:             envVars(crd),
 					Ports:           buildPorts(crd),
 					Resources:       tpl.Resources,
@@ -92,11 +87,9 @@ func NewPodBuilder(crd *cosmosv1.CosmosFullNode) PodBuilder {
 				},
 				// healthcheck sidecar
 				{
-					Name: "healthcheck",
-					// Available images: https://github.com/orgs/strangelove-ventures/packages?repo_name=cosmos-operator
-					// IMPORTANT: Must use v0.6.2 or later.
-					Image:   "ghcr.io/strangelove-ventures/cosmos-operator:" + version.DockerTag(),
-					Command: []string{"/manager", "healthcheck", "--rpc-host", fmt.Sprintf("http://localhost:%d", crd.Spec.ChainSpec.Comet.RPCPort())},
+					Name:    "healthcheck",
+					Image:   operatorImageRepo + ":" + version.DockerTag(),
+					Command: []string{"/manager", "healthcheck", "--rpc-host", fmt.Sprintf("http://localhost:%d", crd.RPCPort())},
 					Ports:   []corev1.ContainerPort{{ContainerPort: healthCheckPort, Protocol: corev1.ProtocolTCP}},
 					Resources: corev1.ResourceRequirements{
 						Requests: corev1.ResourceList{
@@ -111,25 +104,6 @@ func NewPodBuilder(crd *cosmosv1.CosmosFullNode) PodBuilder {
 		},
 	}
 
-	if len(crd.Spec.ChainSpec.Versions) > 0 {
-		// version check sidecar, runs on inverval in case the instance is halting for upgrade.
-		pod.Spec.Containers = append(pod.Spec.Containers, corev1.Container{
-			Name:    "version-check-interval",
-			Image:   "ghcr.io/strangelove-ventures/cosmos-operator:" + version.DockerTag(),
-			Command: versionCheckCmd,
-			Resources: corev1.ResourceRequirements{
-				Requests: corev1.ResourceList{
-					corev1.ResourceCPU:    resource.MustParse("5m"),
-					corev1.ResourceMemory: resource.MustParse("16Mi"),
-				},
-			},
-			Env:             envVars(crd),
-			ImagePullPolicy: tpl.ImagePullPolicy,
-			WorkingDir:      workDir,
-			SecurityContext: &corev1.SecurityContext{},
-		})
-	}
-
 	preserveMergeInto(pod.Labels, tpl.Metadata.Labels)
 	preserveMergeInto(pod.Annotations, tpl.Metadata.Annotations)
 
@@ -139,16 +113,17 @@ func NewPodBuilder(crd *cosmosv1.CosmosFullNode) PodBuilder {
 	}
 }
 
-func podReadinessProbes(crd *cosmosv1.CosmosFullNode) []*corev1.Probe {
-	if crd.Spec.PodTemplate.Probes.Strategy == cosmosv1.FullNodeProbeStrategyNone {
+func podReadinessProbes(crd *tempov1alpha1.TempoFullNode) []*corev1.Probe {
+	if crd.Spec.PodTemplate.Probes.Strategy == tempov1alpha1.ProbeStrategyNone {
 		return []*corev1.Probe{nil, nil}
 	}
 
+	// reth's HTTP server exposes a plain /health endpoint that returns 200 once the server is up.
 	mainProbe := &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{
 				Path:   "/health",
-				Port:   intstr.FromInt(int(crd.Spec.ChainSpec.Comet.RPCPort())),
+				Port:   intstr.FromInt(int(crd.RPCPort())),
 				Scheme: corev1.URISchemeHTTP,
 			},
 		},
@@ -159,7 +134,7 @@ func podReadinessProbes(crd *cosmosv1.CosmosFullNode) []*corev1.Probe {
 		FailureThreshold:    5,
 	}
 
-	if crd.Spec.PodTemplate.Probes.Strategy == cosmosv1.FullNodeProbeStrategyReachable {
+	if crd.Spec.PodTemplate.Probes.Strategy == tempov1alpha1.ProbeStrategyReachable {
 		return []*corev1.Probe{mainProbe, nil}
 	}
 
@@ -181,29 +156,12 @@ func podReadinessProbes(crd *cosmosv1.CosmosFullNode) []*corev1.Probe {
 	return []*corev1.Probe{mainProbe, sidecarProbe}
 }
 
-// Build assigns the CosmosFullNode crd as the owner and returns a fully constructed pod.
+// Build assigns the TempoFullNode crd as the owner and returns a fully constructed pod.
 func (b PodBuilder) Build() (*corev1.Pod, error) {
 	pod := b.pod.DeepCopy()
 
 	if err := kube.ApplyStrategicMergePatch(pod, podPatch(b.crd)); err != nil {
 		return nil, err
-	}
-
-	if len(b.crd.Spec.ChainSpec.Versions) > 0 {
-		instanceHeight := uint64(0)
-		if height, ok := b.crd.Status.Height[pod.Name]; ok {
-			instanceHeight = height
-		}
-		var vrs *cosmosv1.ChainVersion
-		for _, v := range b.crd.Spec.ChainSpec.Versions {
-			if instanceHeight < v.UpgradeHeight {
-				break
-			}
-			vrs = &v
-		}
-		if vrs != nil {
-			setVersionedImages(pod, vrs)
-		}
 	}
 
 	if o, ok := b.crd.Spec.InstanceOverrides[pod.Name]; ok {
@@ -223,10 +181,23 @@ func (b PodBuilder) Build() (*corev1.Pod, error) {
 }
 
 const (
-	volChainHome = "vol-chain-home" // Stores live chain data and config files.
-	volTmp       = "vol-tmp"        // Stores temporary config files for manipulation later.
-	volConfig    = "vol-config"     // Overlay items from ConfigMap.
-	volSystemTmp = "vol-system-tmp" // Necessary for statesync or else you may see the error: ERR State sync failed err="failed to create chunk queue: unable to create temp dir for state sync chunks: stat /tmp: no such file or directory" module=statesync
+	volExecData   = "vol-exec-data"   // Execution datadir; node-local, disposable, re-seeded by `tempo download`.
+	volConsensus  = "vol-consensus"   // Consensus datadir PVC; holds the DKG signing share.
+	volSigningKey = "vol-signing-key" // Validator signing key material, projected from Secrets.
+)
+
+const (
+	workDir = "/home/operator"
+
+	// ExecDataDir is the container path of the execution datadir (`--datadir`).
+	ExecDataDir = workDir + "/data"
+
+	// ConsensusDataDir is the container path of the consensus datadir (`--consensus.datadir`).
+	ConsensusDataDir = workDir + "/consensus"
+
+	signingKeyDir        = "/etc/tempo-keys"
+	signingKeyFile       = signingKeyDir + "/signing-key"
+	encryptionSecretFile = signingKeyDir + "/consensus-secret"
 )
 
 // WithOrdinal updates adds name and other metadata to the pod using "ordinal" which is the pod's
@@ -238,288 +209,281 @@ func (b PodBuilder) WithOrdinal(ordinal int32) PodBuilder {
 	pod.Labels[kube.InstanceLabel] = name
 
 	pod.Name = name
-	pod.Spec.InitContainers = initContainers(b.crd, name)
+	// The init container runs `tempo download` from the same (upgrade-resolved) image as the node.
+	pod.Spec.InitContainers = initContainers(b.crd, pod.Spec.Containers[0].Image)
 
 	pod.Spec.Hostname = pod.Name
 	pod.Spec.Subdomain = b.crd.Name
 
 	pod.Spec.Volumes = []corev1.Volume{
 		{
-			Name: volChainHome,
+			Name:         volExecData,
+			VolumeSource: execVolumeSource(b.crd),
+		},
+		{
+			Name: volConsensus,
 			VolumeSource: corev1.VolumeSource{
 				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: pvcName(b.crd, ordinal)},
 			},
 		},
-		{
-			Name: volTmp,
-			VolumeSource: corev1.VolumeSource{
-				EmptyDir: &corev1.EmptyDirVolumeSource{},
-			},
-		},
-		{
-			Name: volConfig,
-			VolumeSource: corev1.VolumeSource{
-				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{Name: instanceName(b.crd, ordinal)},
-					Items: []corev1.KeyToPath{
-						{Key: configOverlayFile, Path: configOverlayFile},
-						{Key: appOverlayFile, Path: appOverlayFile},
-						{Key: nodeKeyFile, Path: nodeKeyFile},
-					},
-				},
-			},
-		},
-		{
-			Name: volSystemTmp,
-			VolumeSource: corev1.VolumeSource{
-				EmptyDir: &corev1.EmptyDirVolumeSource{},
-			},
-		},
 	}
 
-	// Mounts required by all containers.
-	mounts := []corev1.VolumeMount{
-		{Name: volChainHome, MountPath: ChainHomeDir(b.crd)},
-		{Name: volSystemTmp, MountPath: systemTmpDir},
+	if b.crd.Spec.SigningKey != nil {
+		pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
+			Name: volSigningKey,
+			VolumeSource: corev1.VolumeSource{
+				Projected: &corev1.ProjectedVolumeSource{
+					// 0400 requested; kubelet widens group permissions when fsGroup is set.
+					DefaultMode: ptr(int32(0o400)),
+					Sources:     signingKeyProjections(b.crd.Spec.SigningKey),
+				},
+			},
+		})
 	}
-	// Additional mounts only needed for init containers.
+
+	mounts := []corev1.VolumeMount{
+		{Name: volExecData, MountPath: ExecDataDir},
+		{Name: volConsensus, MountPath: ConsensusDataDir},
+	}
+	if b.crd.Spec.SigningKey != nil {
+		mounts = append(mounts, corev1.VolumeMount{Name: volSigningKey, MountPath: signingKeyDir, ReadOnly: true})
+	}
+
+	// The snapshot init container only needs the exec datadir.
 	for i := range pod.Spec.InitContainers {
-		pod.Spec.InitContainers[i].VolumeMounts = append(mounts, []corev1.VolumeMount{
-			{Name: volTmp, MountPath: tmpDir},
-			{Name: volConfig, MountPath: tmpConfigDir},
-		}...)
+		pod.Spec.InitContainers[i].VolumeMounts = []corev1.VolumeMount{
+			{Name: volExecData, MountPath: ExecDataDir},
+		}
 	}
 
 	// At this point, guaranteed to have at least 2 containers.
 	pod.Spec.Containers[0].VolumeMounts = mounts
 	pod.Spec.Containers[1].VolumeMounts = []corev1.VolumeMount{
-		// The healthcheck sidecar needs access to the home directory so it can read disk usage.
-		{Name: volChainHome, MountPath: ChainHomeDir(b.crd), ReadOnly: true},
-	}
-	if len(pod.Spec.Containers) > 2 {
-		pod.Spec.Containers[2].VolumeMounts = mounts
+		// The healthcheck sidecar needs access to the data directories so it can read disk usage.
+		{Name: volExecData, MountPath: ExecDataDir, ReadOnly: true},
+		{Name: volConsensus, MountPath: ConsensusDataDir, ReadOnly: true},
 	}
 
 	b.pod = pod
 	return b
 }
 
-const (
-	workDir          = "/home/operator"
-	tmpDir           = workDir + "/.tmp"
-	tmpConfigDir     = workDir + "/.config"
-	infraToolImage   = "ghcr.io/strangelove-ventures/infra-toolkit"
-	infraToolVersion = "v0.1.6"
-
-	// Necessary for statesync
-	systemTmpDir = "/tmp"
-)
-
-// ChainHomeDir is the abs filepath for the chain's home directory.
-func ChainHomeDir(crd *cosmosv1.CosmosFullNode) string {
-	if home := crd.Spec.ChainSpec.HomeDir; home != "" {
-		return path.Join(workDir, home)
+func execVolumeSource(crd *tempov1alpha1.TempoFullNode) corev1.VolumeSource {
+	if v := crd.Spec.ExecVolume.Ephemeral; v != nil {
+		return corev1.VolumeSource{Ephemeral: v}
 	}
-	return workDir + "/cosmos"
+	if v := crd.Spec.ExecVolume.EmptyDir; v != nil {
+		return corev1.VolumeSource{EmptyDir: v}
+	}
+	return corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
 }
 
-func envVars(crd *cosmosv1.CosmosFullNode) []corev1.EnvVar {
-	home := ChainHomeDir(crd)
-	return []corev1.EnvVar{
+func signingKeyProjections(sk *tempov1alpha1.SigningKeySpec) []corev1.VolumeProjection {
+	projections := []corev1.VolumeProjection{
+		{
+			Secret: &corev1.SecretProjection{
+				LocalObjectReference: sk.SigningKeySecret.LocalObjectReference,
+				Items: []corev1.KeyToPath{
+					{Key: sk.SigningKeySecret.Key, Path: "signing-key"},
+				},
+			},
+		},
+	}
+	if sk.EncryptionSecret.Name == sk.SigningKeySecret.Name {
+		projections[0].Secret.Items = append(projections[0].Secret.Items, corev1.KeyToPath{
+			Key: sk.EncryptionSecret.Key, Path: "consensus-secret",
+		})
+		return projections
+	}
+	return append(projections, corev1.VolumeProjection{
+		Secret: &corev1.SecretProjection{
+			LocalObjectReference: sk.EncryptionSecret.LocalObjectReference,
+			Items: []corev1.KeyToPath{
+				{Key: sk.EncryptionSecret.Key, Path: "consensus-secret"},
+			},
+		},
+	})
+}
+
+const telemetryURLEnvVar = "TEMPO_TELEMETRY_URL"
+
+func envVars(crd *tempov1alpha1.TempoFullNode) []corev1.EnvVar {
+	env := []corev1.EnvVar{
 		{Name: "HOME", Value: workDir},
-		{Name: "CHAIN_HOME", Value: home},
-		{Name: "GENESIS_FILE", Value: path.Join(home, "config", "genesis.json")},
-		{Name: "ADDRBOOK_FILE", Value: path.Join(home, "config", "addrbook.json")},
-		{Name: "CONFIG_DIR", Value: path.Join(home, "config")},
-		{Name: "DATA_DIR", Value: path.Join(home, "data")},
+		{Name: "CHAIN", Value: crd.Spec.ChainSpec.Chain},
+		{Name: "DATA_DIR", Value: ExecDataDir},
+		{Name: "CONSENSUS_DATA_DIR", Value: ConsensusDataDir},
 	}
-}
-
-func resolveInfraToolImage() string {
-	return fmt.Sprintf("%s:%s", infraToolImage, infraToolVersion)
-}
-
-func initContainers(crd *cosmosv1.CosmosFullNode, moniker string) []corev1.Container {
-	tpl := crd.Spec.PodTemplate
-	binary := crd.Spec.ChainSpec.Binary
-	genesisCmd, genesisArgs := DownloadGenesisCommand(crd.Spec.ChainSpec)
-	addrbookCmd, addrbookArgs := DownloadAddrbookCommand(crd.Spec.ChainSpec)
-	env := envVars(crd)
-
-	initCmd := fmt.Sprintf("%s init --chain-id %s %s", binary, crd.Spec.ChainSpec.ChainID, moniker)
-	if len(crd.Spec.ChainSpec.AdditionalInitArgs) > 0 {
-		initCmd += " " + strings.Join(crd.Spec.ChainSpec.AdditionalInitArgs, " ")
-	}
-	required := []corev1.Container{
-		{
-			Name:            "clean-init",
-			Image:           resolveInfraToolImage(),
-			Command:         []string{"sh"},
-			Args:            []string{"-c", `rm -rf "$HOME/.tmp/*"`},
-			Env:             env,
-			ImagePullPolicy: tpl.ImagePullPolicy,
-			WorkingDir:      workDir,
-		},
-		{
-			Name:    chainInitContainer,
-			Image:   tpl.Image,
-			Command: []string{"sh"},
-			Args: []string{"-c",
-				fmt.Sprintf(`
-set -eu
-if [ ! -d "$CHAIN_HOME/data" ]; then
-	echo "Initializing chain..."
-	%s --home "$CHAIN_HOME"
-else
-	echo "Skipping chain init; already initialized."
-fi
-
-echo "Initializing into tmp dir for downstream processing..."
-%s --home "$HOME/.tmp"
-`, initCmd, initCmd),
-			},
-			Env:             env,
-			ImagePullPolicy: tpl.ImagePullPolicy,
-			WorkingDir:      workDir,
-		},
-
-		{
-			Name:            "genesis-init",
-			Image:           resolveInfraToolImage(),
-			Command:         []string{genesisCmd},
-			Args:            genesisArgs,
-			Env:             env,
-			ImagePullPolicy: tpl.ImagePullPolicy,
-			WorkingDir:      workDir,
-		},
-		{
-			Name:            "addrbook-init",
-			Image:           resolveInfraToolImage(),
-			Command:         []string{addrbookCmd},
-			Args:            addrbookArgs,
-			Env:             env,
-			ImagePullPolicy: tpl.ImagePullPolicy,
-			WorkingDir:      workDir,
-		},
-		{
-			Name:    "config-merge",
-			Image:   resolveInfraToolImage(),
-			Command: []string{"sh"},
-			Args: []string{"-c",
-				`
-set -eu
-CONFIG_DIR="$CHAIN_HOME/config"
-TMP_DIR="$HOME/.tmp/config"
-OVERLAY_DIR="$HOME/.config"
-
-# This is a hack to prevent adding another init container.
-# Ideally, this step is not concerned with merging config, so it would live elsewhere.
-# The node key is a secret mounted into the main "node" container, so we do not need this one.
-echo "Removing node key from chain's init subcommand..."
-rm -rf "$CONFIG_DIR/node_key.json"
-cp "$OVERLAY_DIR/node_key.json" "$CONFIG_DIR/node_key.json"
-
-echo "Merging config..."
-set -x
-
-if [ -f "$TMP_DIR/config.toml" ]; then
-	config-merge -f toml "$TMP_DIR/config.toml" "$OVERLAY_DIR/config-overlay.toml" > "$CONFIG_DIR/config.toml"
-fi
-if [ -f "$TMP_DIR/app.toml" ]; then
-	config-merge -f toml "$TMP_DIR/app.toml" "$OVERLAY_DIR/app-overlay.toml" > "$CONFIG_DIR/app.toml"
-fi
-`,
-			},
-			Env:             env,
-			ImagePullPolicy: tpl.ImagePullPolicy,
-			WorkingDir:      workDir,
-		},
-	}
-
-	if willRestoreFromSnapshot(crd) {
-		cmd, args := DownloadSnapshotCommand(crd.Spec.ChainSpec)
-		required = append(required, corev1.Container{
-			Name:            "snapshot-restore",
-			Image:           resolveInfraToolImage(),
-			Command:         []string{cmd},
-			Args:            args,
-			Env:             env,
-			ImagePullPolicy: tpl.ImagePullPolicy,
-			WorkingDir:      workDir,
+	if sel := crd.Spec.Telemetry.TelemetryURLSecret; sel != nil {
+		env = append(env, corev1.EnvVar{
+			Name:      telemetryURLEnvVar,
+			ValueFrom: &corev1.EnvVarSource{SecretKeyRef: sel},
 		})
 	}
-
-	versionCheckCmd := []string{"/manager", "versioncheck"}
-	if crd.Spec.ChainSpec.DatabaseBackend != nil {
-		versionCheckCmd = append(versionCheckCmd, "-b", *crd.Spec.ChainSpec.DatabaseBackend)
-	}
-
-	// Append version check after snapshot download, if applicable.
-	// That way the version check will be after the database is initialized.
-	// This initContainer will update the crd status with the current height for the pod,
-	// And then panic if the image version is not correct for the current height.
-	// After the status is patched, the pod will be restarted with the correct image.
-	required = append(required, corev1.Container{
-		Name:    "version-check",
-		Image:   "ghcr.io/strangelove-ventures/cosmos-operator:" + version.DockerTag(),
-		Command: versionCheckCmd,
-		Resources: corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("5m"),
-				corev1.ResourceMemory: resource.MustParse("16Mi"),
-			},
-		},
-		Env:             env,
-		ImagePullPolicy: tpl.ImagePullPolicy,
-		WorkingDir:      workDir,
-		SecurityContext: &corev1.SecurityContext{},
-	})
-
-	return required
+	return append(env, crd.Spec.ChainSpec.Env...)
 }
 
-func startCmdAndArgs(crd *cosmosv1.CosmosFullNode) (string, []string) {
-	var (
-		binary             = crd.Spec.ChainSpec.Binary
-		args               = startCommandArgs(crd)
-		privvalSleep int32 = 10
+// nodeArgs builds the `tempo node` command line from the spec. Configuration is CLI flags only;
+// there is no config.toml/app.toml equivalent on Tempo.
+func nodeArgs(crd *tempov1alpha1.TempoFullNode) []string {
+	args := []string{
+		"node",
+		"--datadir", ExecDataDir,
+		"--chain", crd.Spec.ChainSpec.Chain,
+		"--consensus.datadir", ConsensusDataDir,
+	}
+
+	if crd.FollowEnabled() {
+		args = append(args, "--follow")
+	}
+
+	if crd.Spec.SigningKey != nil {
+		args = append(args,
+			"--consensus.signing-key", signingKeyFile,
+			"--consensus.secret", encryptionSecretFile,
+		)
+	}
+
+	p2p := fmt.Sprint(crd.P2PPort())
+	args = append(args,
+		"--port", p2p,
+		"--discovery.addr", "0.0.0.0",
+		"--discovery.port", p2p,
 	)
-	if v := crd.Spec.ChainSpec.PrivvalSleepSeconds; v != nil {
-		privvalSleep = *v
+
+	// The JSON-RPC server is always enabled: the healthcheck sidecar and the operator's status
+	// collector depend on it for eth_syncing/eth_blockNumber. spec.rpc.enabled only controls
+	// service exposure outside the pod.
+	apis := crd.Spec.RPC.APIs
+	if len(apis) == 0 {
+		apis = []string{"eth", "net", "web3", "txpool", "trace"}
+	}
+	args = append(args,
+		"--http",
+		"--http.addr", "0.0.0.0",
+		"--http.port", fmt.Sprint(crd.RPCPort()),
+		"--http.api", strings.Join(apis, ","),
+	)
+
+	if crd.WSEnabled() {
+		args = append(args,
+			"--ws",
+			"--ws.addr", "0.0.0.0",
+			"--ws.port", fmt.Sprint(crd.WSPort()),
+		)
 	}
 
-	if crd.Spec.Type == cosmosv1.Sentry && privvalSleep > 0 {
-		shellBody := fmt.Sprintf(`sleep %d
-%s %s`, privvalSleep, binary, strings.Join(args, " "))
-		return "sh", []string{"-c", shellBody}
+	args = append(args, "--metrics", fmt.Sprint(crd.MetricsPort()))
+
+	tel := crd.Spec.Telemetry
+	switch {
+	case tel.TelemetryURLSecret != nil:
+		// Kubernetes expands $(VAR) in args from the container's env, keeping the token out of
+		// the pod spec's literal args.
+		args = append(args, "--telemetry-url", fmt.Sprintf("$(%s)", telemetryURLEnvVar))
+	case tel.TelemetryURL != nil:
+		args = append(args, "--telemetry-url", *tel.TelemetryURL)
+	}
+	if tel.MetricsInterval != nil {
+		args = append(args, "--telemetry-metrics-interval", tel.MetricsInterval.Duration.String())
 	}
 
-	return binary, args
+	return append(args, crd.Spec.ChainSpec.AdditionalArgs...)
 }
 
-func startCommandArgs(crd *cosmosv1.CosmosFullNode) []string {
-	args := []string{"start", "--home", ChainHomeDir(crd)}
-	cfg := crd.Spec.ChainSpec
-	if cfg.SkipInvariants {
-		args = append(args, "--x-crisis-skip-assert-invariants")
+func buildPorts(crd *tempov1alpha1.TempoFullNode) []corev1.ContainerPort {
+	ports := []corev1.ContainerPort{
+		{
+			Name:          "p2p",
+			Protocol:      corev1.ProtocolTCP,
+			ContainerPort: crd.P2PPort(),
+		},
+		{
+			Name:          "p2p-udp",
+			Protocol:      corev1.ProtocolUDP,
+			ContainerPort: crd.P2PPort(),
+		},
+		{
+			Name:          "http-rpc",
+			Protocol:      corev1.ProtocolTCP,
+			ContainerPort: crd.RPCPort(),
+		},
+		{
+			Name:          "metrics",
+			Protocol:      corev1.ProtocolTCP,
+			ContainerPort: crd.MetricsPort(),
+		},
 	}
-	if lvl := cfg.LogLevel; lvl != nil {
-		args = append(args, "--log_level", *lvl)
+	if crd.WSEnabled() {
+		ports = append(ports, corev1.ContainerPort{
+			Name:          "ws",
+			Protocol:      corev1.ProtocolTCP,
+			ContainerPort: crd.WSPort(),
+		})
 	}
-	if format := cfg.LogFormat; format != nil {
-		args = append(args, "--log_format", *format)
-	}
-	if len(crd.Spec.ChainSpec.AdditionalStartArgs) > 0 {
-		args = append(args, crd.Spec.ChainSpec.AdditionalStartArgs...)
-	}
-	return args
+	return ports
 }
 
-func willRestoreFromSnapshot(crd *cosmosv1.CosmosFullNode) bool {
-	return crd.Spec.ChainSpec.SnapshotURL != nil || crd.Spec.ChainSpec.SnapshotScript != nil
+// snapshotDownloadScript wraps `tempo download` for idempotence. The exec datadir may already be
+// populated after a container restart on the same node; identity files (discovery-secret,
+// known-peers.json) do not count as populated because `tempo download` preserves them.
+const snapshotDownloadScript = `set -eu
+if find "$DATA_DIR" -mindepth 1 -maxdepth 1 ! -name discovery-secret ! -name known-peers.json ! -name lost+found | grep -q .; then
+	echo "Execution datadir $DATA_DIR already populated; skipping snapshot download."
+	exit 0
+fi
+exec %s
+`
+
+const snapshotForceScript = `set -eu
+exec %s
+`
+
+func initContainers(crd *tempov1alpha1.TempoFullNode, image string) []corev1.Container {
+	policy := crd.SnapshotPolicyOrDefault()
+	if policy == tempov1alpha1.SnapshotInitNever {
+		return nil
+	}
+
+	download := []string{
+		"tempo", "download",
+		"--chain", crd.Spec.ChainSpec.Chain,
+		"--datadir", ExecDataDir,
+		"--" + string(crd.SnapshotProfileOrDefault()),
+		"--non-interactive",
+	}
+	if v := crd.Spec.SnapshotInit.URL; v != nil {
+		download = append(download, "--url", *v)
+	}
+	if v := crd.Spec.SnapshotInit.ManifestURL; v != nil {
+		download = append(download, "--manifest-url", *v)
+	}
+	download = append(download, crd.Spec.ChainSpec.AdditionalDownloadArgs...)
+
+	var script string
+	if policy == tempov1alpha1.SnapshotInitAlways {
+		// --force overwrites existing snapshot data while preserving discovery-secret and
+		// known-peers.json.
+		download = append(download, "--force")
+		script = fmt.Sprintf(snapshotForceScript, strings.Join(download, " "))
+	} else {
+		script = fmt.Sprintf(snapshotDownloadScript, strings.Join(download, " "))
+	}
+
+	return []corev1.Container{
+		{
+			Name:            snapshotInitContainer,
+			Image:           image,
+			Command:         []string{"sh"},
+			Args:            []string{"-c", script},
+			Env:             envVars(crd),
+			ImagePullPolicy: crd.Spec.PodTemplate.ImagePullPolicy,
+			WorkingDir:      workDir,
+		},
+	}
 }
 
-func podPatch(crd *cosmosv1.CosmosFullNode) *corev1.Pod {
+func podPatch(crd *tempov1alpha1.TempoFullNode) *corev1.Pod {
 	tpl := crd.Spec.PodTemplate
 	// For fields with sliceOrDefault if you pass nil, the field is deleted.
 	spec := corev1.PodSpec{
@@ -537,105 +501,31 @@ func podPatch(crd *cosmosv1.CosmosFullNode) *corev1.Pod {
 	return &corev1.Pod{Spec: spec}
 }
 
-// PVCName returns the primary PVC holding the chain data associated with the pod.
-func PVCName(pod *corev1.Pod) string {
-	found, ok := lo.Find(pod.Spec.Volumes, func(v corev1.Volume) bool { return v.Name == volChainHome })
-	if !ok {
-		return ""
+func setChainContainerImage(pod *corev1.Pod, image string) {
+	for i := range pod.Spec.Containers {
+		if pod.Spec.Containers[i].Name == mainContainer {
+			pod.Spec.Containers[i].Image = image
+			break
+		}
 	}
-	if found.PersistentVolumeClaim == nil {
-		return ""
+
+	for i := range pod.Spec.InitContainers {
+		if pod.Spec.InitContainers[i].Name == snapshotInitContainer {
+			pod.Spec.InitContainers[i].Image = image
+			break
+		}
 	}
-	return found.PersistentVolumeClaim.ClaimName
 }
 
-func buildAdditionalPod(
-	crd *cosmosv1.CosmosFullNode,
-	ordinal int32,
-	podSpec cosmosv1.AdditionalPodSpec,
-) (*corev1.Pod, error) {
-	// Create a unique name for the additional pod
-	name := fmt.Sprintf("%s-%d", podSpec.Name, ordinal)
-
-	labels := defaultLabels(crd)
-	labels[kube.NameLabel] = appName(crd) + "-" + podSpec.Name
-
-	belongsTo := instanceName(crd, ordinal)
-
-	pod := &corev1.Pod{
-		TypeMeta: metav1.TypeMeta{
-			Kind:       "Pod",
-			APIVersion: "v1",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace:   crd.Namespace,
-			Name:        name,
-			Labels:      labels,
-			Annotations: make(map[string]string),
-		},
-		Spec: podSpec.PodSpec,
-	}
-
-	if podSpec.PreferSameNode {
-		pod.Spec.Affinity = &corev1.Affinity{
-			PodAffinity: &corev1.PodAffinity{
-				PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{
-					{
-						Weight: 100,
-						PodAffinityTerm: corev1.PodAffinityTerm{
-							LabelSelector: &metav1.LabelSelector{
-								MatchLabels: map[string]string{
-									kube.InstanceLabel: belongsTo,
-								},
-							},
-							TopologyKey: "kubernetes.io/hostname",
-						},
-					},
-				},
-			},
-		}
-	}
-
-	// Apply common labels and annotations
-	preserveMergeInto(pod.Labels, podSpec.Metadata.Labels)
-	preserveMergeInto(pod.Annotations, podSpec.Metadata.Annotations)
-
-	pod.Labels[kube.InstanceLabel] = name
-	pod.Labels[kube.BelongsToLabel] = belongsTo
-
-	if len(crd.Spec.ChainSpec.Versions) > 0 {
-		instanceHeight := uint64(0)
-		if height, ok := crd.Status.Height[belongsTo]; ok {
-			instanceHeight = height
-		}
-		var vrs *cosmosv1.ChainVersion
-		for _, v := range crd.Spec.ChainSpec.Versions {
-			if instanceHeight < v.UpgradeHeight {
-				break
+// PVCName returns the consensus PVC associated with the pod.
+func PVCName(pod *corev1.Pod) string {
+	for _, v := range pod.Spec.Volumes {
+		if v.Name == volConsensus {
+			if v.PersistentVolumeClaim == nil {
+				return ""
 			}
-			vrs = &v
-		}
-		if vrs != nil {
-			setVersionedImages(pod, vrs)
+			return v.PersistentVolumeClaim.ClaimName
 		}
 	}
-
-	// Handle instance overrides if needed
-	if o, ok := crd.Spec.InstanceOverrides[name]; ok {
-		if o.DisableStrategy != nil {
-			return nil, nil
-		}
-		if o.Image != "" {
-			if len(pod.Spec.Containers) == 0 {
-				return nil, fmt.Errorf("no containers in pod %q", name)
-			}
-			pod.Spec.Containers[0].Image = o.Image
-		}
-		if o.NodeSelector != nil {
-			pod.Spec.NodeSelector = o.NodeSelector
-		}
-	}
-
-	kube.NormalizeMetadata(&pod.ObjectMeta)
-	return pod, nil
+	return ""
 }

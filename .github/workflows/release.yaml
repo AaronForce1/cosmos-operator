@@ -9,7 +9,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  # Must match operatorImageRepo in internal/fullnode/pod_builder.go (healthcheck sidecar image).
+  IMAGE_NAME: ${{ github.repository_owner }}/tempo-operator
 
 jobs:
   build-and-push-image:

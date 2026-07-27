@@ -1,34 +1,16 @@
-domain: strange.love
+domain: aaronforce.io
 layout:
 - go.kubebuilder.io/v3
-projectName: cosmos-operator
-repo: github.com/strangelove-ventures/cosmos-operator
+projectName: tempo-operator
+repo: github.com/aaronforce1/cosmos-operator
 resources:
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: strange.love
-  group: cosmos
-  kind: CosmosFullNode
-  path: github.com/strangelove-ventures/cosmos-operator/api/v1
-  version: v1
-- api:
-    crdVersion: v1
-    namespaced: true
-  controller: true
-  domain: strange.love
-  group: cosmos
-  kind: StatefulJob
-  path: github.com/strangelove-ventures/cosmos-operator/api/v1alpha1
-  version: v1alpha1
-- api:
-    crdVersion: v1
-    namespaced: true
-  controller: true
-  domain: strange.love
-  group: cosmos
-  kind: ScheduledVolumeSnapshot
-  path: github.com/strangelove-ventures/cosmos-operator/api/v1alpha1
+  domain: aaronforce.io
+  group: tempo
+  kind: TempoFullNode
+  path: github.com/aaronforce1/cosmos-operator/api/v1alpha1
   version: v1alpha1
 version: "3"

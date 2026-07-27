@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	cosmosv1 "github.com/strangelove-ventures/cosmos-operator/api/v1"
+	tempov1alpha1 "github.com/aaronforce1/cosmos-operator/api/v1alpha1"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/errgroup"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -28,14 +28,14 @@ func (t *threadUnsafeClient) Update(ctx context.Context, obj client.Object, opts
 func (t *threadUnsafeClient) Status() client.StatusWriter { return t }
 
 func TestStatusClient_SyncUpdate(t *testing.T) {
-	type mClient = mockClient[*cosmosv1.CosmosFullNode]
+	type mClient = mockClient[*tempov1alpha1.TempoFullNode]
 
 	ctx := context.Background()
 
 	t.Run("happy path", func(t *testing.T) {
 		var (
 			mock    mClient
-			stubCRD cosmosv1.CosmosFullNode
+			stubCRD tempov1alpha1.TempoFullNode
 		)
 		stubCRD.Status.Phase = "test-phase"
 		stubCRD.Name = "test"
@@ -45,7 +45,7 @@ func TestStatusClient_SyncUpdate(t *testing.T) {
 		c := NewStatusClient(&mock)
 		key := client.ObjectKey{Name: "test", Namespace: "default"}
 		msg := ptr("Here's test message")
-		err := c.SyncUpdate(ctx, key, func(status *cosmosv1.FullNodeStatus) {
+		err := c.SyncUpdate(ctx, key, func(status *tempov1alpha1.TempoFullNodeStatus) {
 			status.StatusMessage = msg
 		})
 
@@ -69,7 +69,7 @@ func TestStatusClient_SyncUpdate(t *testing.T) {
 		var eg errgroup.Group
 		for i := 0; i < total; i++ {
 			eg.Go(func() error {
-				return c.SyncUpdate(ctx, key, func(status *cosmosv1.FullNodeStatus) {})
+				return c.SyncUpdate(ctx, key, func(status *tempov1alpha1.TempoFullNodeStatus) {})
 			})
 		}
 
@@ -95,14 +95,14 @@ func TestStatusClient_SyncUpdate(t *testing.T) {
 	t.Run("update error", func(t *testing.T) {
 		var (
 			mock    mClient
-			stubCRD cosmosv1.CosmosFullNode
+			stubCRD tempov1alpha1.TempoFullNode
 		)
 		mock.Object = stubCRD
 		mock.UpdateErr = errors.New("update boom")
 
 		c := NewStatusClient(&mock)
 		key := client.ObjectKey{Name: "test", Namespace: "default"}
-		err := c.SyncUpdate(ctx, key, func(status *cosmosv1.FullNodeStatus) {})
+		err := c.SyncUpdate(ctx, key, func(status *tempov1alpha1.TempoFullNodeStatus) {})
 
 		require.Error(t, err)
 		require.EqualError(t, err, "update boom")

@@ -6,10 +6,11 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+	"time"
 
+	tempov1alpha1 "github.com/aaronforce1/cosmos-operator/api/v1alpha1"
+	"github.com/aaronforce1/cosmos-operator/internal/healthcheck"
 	"github.com/samber/lo"
-	cosmosv1 "github.com/strangelove-ventures/cosmos-operator/api/v1"
-	"github.com/strangelove-ventures/cosmos-operator/internal/healthcheck"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -32,11 +33,11 @@ func TestCollectDiskUsage(t *testing.T) {
 
 	const namespace = "default"
 
-	var crd cosmosv1.CosmosFullNode
+	var crd tempov1alpha1.TempoFullNode
 	crd.Name = "cosmoshub"
 	crd.Namespace = namespace
 
-	builder := NewPodBuilder(&crd)
+	builder := NewPodBuilder(&crd, time.Now())
 	validPods := lo.Map(lo.Range(3), func(_ int, index int) corev1.Pod {
 		pod, err := builder.WithOrdinal(int32(index)).Build()
 		if err != nil {
@@ -56,7 +57,7 @@ func TestCollectDiskUsage(t *testing.T) {
 		}
 
 		diskClient := mockDiskUsager(func(ctx context.Context, host, homeDir string) (healthcheck.DiskUsageResponse, error) {
-			if homeDir != "/home/operator/cosmos" {
+			if homeDir != ConsensusDataDir {
 				return healthcheck.DiskUsageResponse{}, fmt.Errorf("unexpected homeDir: %s", homeDir)
 			}
 			var free uint64
@@ -112,34 +113,6 @@ func TestCollectDiskUsage(t *testing.T) {
 		require.Equal(t, "pvc-cosmoshub-2", result.Name)
 		require.Equal(t, 99, result.PercentUsed) // Tests rounding to be close to output of `df`
 		require.Equal(t, resource.MustParse("500Gi"), result.Capacity)
-	})
-
-	t.Run("custom home dir", func(t *testing.T) {
-		var reader mockReader
-		reader.ObjectList = corev1.PodList{Items: validPods}
-		reader.Object = corev1.PersistentVolumeClaim{
-			Status: corev1.PersistentVolumeClaimStatus{
-				Capacity: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("500Gi")},
-			},
-		}
-
-		diskClient := mockDiskUsager(func(ctx context.Context, host, homeDir string) (healthcheck.DiskUsageResponse, error) {
-			if homeDir != "/home/operator/.gaia" {
-				return healthcheck.DiskUsageResponse{}, fmt.Errorf("unexpected homeDir: %s", homeDir)
-			}
-			return healthcheck.DiskUsageResponse{
-				AllBytes:  1000,
-				FreeBytes: 900,
-			}, nil
-		})
-
-		coll := NewDiskUsageCollector(diskClient, &reader)
-
-		ccrd := crd.DeepCopy()
-		ccrd.Spec.ChainSpec.HomeDir = ".gaia"
-		_, err := coll.CollectDiskUsage(ctx, ccrd)
-
-		require.NoError(t, err)
 	})
 
 	t.Run("no pods found", func(t *testing.T) {
@@ -209,7 +182,7 @@ func TestCollectDiskUsage(t *testing.T) {
 			return healthcheck.DiskUsageResponse{Dir: "/some/dir"}, errors.New("boom")
 		})
 
-		var crd cosmosv1.CosmosFullNode
+		var crd tempov1alpha1.TempoFullNode
 
 		coll := NewDiskUsageCollector(diskClient, &reader)
 		_, err := coll.CollectDiskUsage(ctx, &crd)

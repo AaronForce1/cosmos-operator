@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	cosmosv1 "github.com/strangelove-ventures/cosmos-operator/api/v1"
-	"github.com/strangelove-ventures/cosmos-operator/internal/cosmos"
+	tempov1alpha1 "github.com/aaronforce1/cosmos-operator/api/v1alpha1"
+	"github.com/aaronforce1/cosmos-operator/internal/tempo"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -17,7 +17,7 @@ import (
 func TestResetStatus(t *testing.T) {
 	t.Parallel()
 
-	var crd cosmosv1.CosmosFullNode
+	var crd tempov1alpha1.TempoFullNode
 	crd.Generation = 123
 	crd.Status.StatusMessage = ptr("should not see me")
 	crd.Status.Phase = "should not see me"
@@ -25,14 +25,14 @@ func TestResetStatus(t *testing.T) {
 
 	require.EqualValues(t, 123, crd.Status.ObservedGeneration)
 	require.Nil(t, crd.Status.StatusMessage)
-	require.Equal(t, cosmosv1.FullNodePhaseProgressing, crd.Status.Phase)
+	require.Equal(t, tempov1alpha1.TempoFullNodePhaseProgressing, crd.Status.Phase)
 }
 
 type mockStatusCollector struct {
-	CollectFn func(ctx context.Context, controller client.ObjectKey) cosmos.StatusCollection
+	CollectFn func(ctx context.Context, controller client.ObjectKey) tempo.StatusCollection
 }
 
-func (m mockStatusCollector) Collect(ctx context.Context, controller client.ObjectKey) cosmos.StatusCollection {
+func (m mockStatusCollector) Collect(ctx context.Context, controller client.ObjectKey) tempo.StatusCollection {
 	return m.CollectFn(ctx, controller)
 }
 
@@ -44,26 +44,28 @@ func TestSyncInfoStatus(t *testing.T) {
 		namespace = "default"
 	)
 
-	var crd cosmosv1.CosmosFullNode
+	var crd tempov1alpha1.TempoFullNode
 	crd.Name = name
 	crd.Namespace = namespace
 
 	ts := time.Now()
 
 	var collector mockStatusCollector
-	collector.CollectFn = func(ctx context.Context, controller client.ObjectKey) cosmos.StatusCollection {
+	collector.CollectFn = func(ctx context.Context, controller client.ObjectKey) tempo.StatusCollection {
 		require.NotNil(t, ctx)
 		require.Equal(t, name, controller.Name)
 		require.Equal(t, namespace, controller.Namespace)
 
-		var notInSync cosmos.CometStatus
-		notInSync.Result.SyncInfo.CatchingUp = true
-		notInSync.Result.SyncInfo.LatestBlockHeight = "9999"
+		var notInSync tempo.NodeStatus
+		notInSync.Syncing = true
+		notInSync.Height = 9999
+		notInSync.LatestBlockTime = ts
 
-		var inSync cosmos.CometStatus
-		inSync.Result.SyncInfo.LatestBlockHeight = "10000"
+		var inSync tempo.NodeStatus
+		inSync.Height = 10000
+		inSync.LatestBlockTime = ts
 
-		return cosmos.StatusCollection{
+		return tempo.StatusCollection{
 			// Purposefully out of order to test sorting.
 			{Pod: &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod-0"}}, Status: notInSync, TS: ts},
 			{Pod: &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod-1"}}, Status: inSync, TS: ts},
@@ -72,15 +74,17 @@ func TestSyncInfoStatus(t *testing.T) {
 	}
 
 	wantTS := metav1.NewTime(ts)
-	want := map[string]*cosmosv1.SyncInfoPodStatus{
+	want := map[string]*tempov1alpha1.SyncInfoPodStatus{
 		"pod-0": {
 			Timestamp: wantTS,
 			Height:    ptr(uint64(9999)),
+			PeerCount: ptr(uint64(0)),
 			InSync:    ptr(false),
 		},
 		"pod-1": {
 			Timestamp: wantTS,
 			Height:    ptr(uint64(10000)),
+			PeerCount: ptr(uint64(0)),
 			InSync:    ptr(true),
 		},
 		"pod-2": {

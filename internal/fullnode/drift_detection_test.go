@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
+	tempov1alpha1 "github.com/aaronforce1/cosmos-operator/api/v1alpha1"
+	"github.com/aaronforce1/cosmos-operator/internal/tempo"
 	"github.com/samber/lo"
-	cosmosv1 "github.com/strangelove-ventures/cosmos-operator/api/v1"
-	"github.com/strangelove-ventures/cosmos-operator/internal/cosmos"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -18,24 +18,29 @@ import (
 
 func TestDriftDetection_LaggingPods(t *testing.T) {
 	t.Run("happy path", func(t *testing.T) {
-		var crd cosmosv1.CosmosFullNode
+		var crd tempov1alpha1.TempoFullNode
 		crd.Name = "noble"
 		crd.Namespace = "default"
 		maxUnavail := &intstr.IntOrString{Type: intstr.Int, IntVal: 1}
 		crd.Spec.RolloutStrategy.MaxUnavailable = maxUnavail
 		crd.Spec.Replicas = 3
 
-		var coll cosmos.StatusCollection = lo.Map(lo.Range(5), func(_, i int) cosmos.StatusItem {
-			return cosmos.StatusItem{Pod: &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("pod-%d", i)}}}
+		now := time.Now()
+		var coll tempo.StatusCollection = lo.Map(lo.Range(5), func(_, i int) tempo.StatusItem {
+			return tempo.StatusItem{
+				Pod:    &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("pod-%d", i)}},
+				TS:     now,
+				Status: tempo.NodeStatus{LatestBlockTime: now},
+			}
 		})
 
-		coll[0].Status.Result.SyncInfo.LatestBlockHeight = "100"
-		coll[1].Status.Result.SyncInfo.LatestBlockHeight = "100"
-		coll[2].Status.Result.SyncInfo.LatestBlockHeight = "95"
-		coll[3].Status.Result.SyncInfo.LatestBlockHeight = "90"
-		coll[4].Status.Result.SyncInfo.CatchingUp = true
+		coll[0].Status.Height = 100
+		coll[1].Status.Height = 100
+		coll[2].Status.Height = 95
+		coll[3].Status.Height = 90
+		coll[4].Status.Syncing = true
 
-		collector := mockStatusCollector{CollectFn: func(ctx context.Context, controller client.ObjectKey) cosmos.StatusCollection {
+		collector := mockStatusCollector{CollectFn: func(ctx context.Context, controller client.ObjectKey) tempo.StatusCollection {
 			require.NotNil(t, ctx)
 			require.Equal(t, client.ObjectKey{Namespace: "default", Name: "noble"}, controller)
 			return coll
@@ -53,8 +58,8 @@ func TestDriftDetection_LaggingPods(t *testing.T) {
 			{3, 1, []string{"pod-2"}},
 			{1, 0, []string{}},
 		} {
-			crd.Spec.SelfHeal = &cosmosv1.SelfHealSpec{}
-			crd.Spec.SelfHeal.HeightDriftMitigation = &cosmosv1.HeightDriftMitigationSpec{
+			crd.Spec.SelfHeal = &tempov1alpha1.SelfHealSpec{}
+			crd.Spec.SelfHeal.HeightDriftMitigation = &tempov1alpha1.HeightDriftMitigationSpec{
 				Threshold: tt.Threshold,
 			}
 
@@ -81,14 +86,14 @@ func TestDriftDetection_LaggingPods(t *testing.T) {
 	})
 
 	t.Run("no pods or replicas", func(t *testing.T) {
-		collector := mockStatusCollector{CollectFn: func(ctx context.Context, controller client.ObjectKey) cosmos.StatusCollection {
+		collector := mockStatusCollector{CollectFn: func(ctx context.Context, controller client.ObjectKey) tempo.StatusCollection {
 			return nil
 		}}
 		detector := NewDriftDetection(collector)
 
-		var crd cosmosv1.CosmosFullNode
-		crd.Spec.SelfHeal = &cosmosv1.SelfHealSpec{}
-		crd.Spec.SelfHeal.HeightDriftMitigation = &cosmosv1.HeightDriftMitigationSpec{
+		var crd tempov1alpha1.TempoFullNode
+		crd.Spec.SelfHeal = &tempov1alpha1.SelfHealSpec{}
+		crd.Spec.SelfHeal.HeightDriftMitigation = &tempov1alpha1.HeightDriftMitigationSpec{
 			Threshold: 25,
 		}
 

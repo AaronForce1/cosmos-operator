@@ -22,15 +22,15 @@ import (
 	"os"
 	"time"
 
+	opcmd "github.com/aaronforce1/cosmos-operator/cmd"
+	"github.com/aaronforce1/cosmos-operator/controllers"
+	"github.com/aaronforce1/cosmos-operator/internal/fullnode"
+	"github.com/aaronforce1/cosmos-operator/internal/tempo"
+	"github.com/aaronforce1/cosmos-operator/internal/version"
 	"github.com/go-logr/zapr"
 	"github.com/pkg/profile"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	opcmd "github.com/strangelove-ventures/cosmos-operator/cmd"
-	"github.com/strangelove-ventures/cosmos-operator/controllers"
-	"github.com/strangelove-ventures/cosmos-operator/internal/cosmos"
-	"github.com/strangelove-ventures/cosmos-operator/internal/fullnode"
-	"github.com/strangelove-ventures/cosmos-operator/internal/version"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -40,9 +40,7 @@ import (
 	// Add Pprof endpoints.
 	_ "net/http/pprof"
 
-	snapshotv1 "github.com/kubernetes-csi/external-snapshotter/client/v6/apis/volumesnapshot/v1"
-	cosmosv1 "github.com/strangelove-ventures/cosmos-operator/api/v1"
-	cosmosv1alpha1 "github.com/strangelove-ventures/cosmos-operator/api/v1alpha1"
+	tempov1alpha1 "github.com/aaronforce1/cosmos-operator/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -57,10 +55,8 @@ var (
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(snapshotv1.AddToScheme(scheme))
 
-	utilruntime.Must(cosmosv1.AddToScheme(scheme))
-	utilruntime.Must(cosmosv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(tempov1alpha1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 
@@ -108,7 +104,6 @@ func rootCmd() *cobra.Command {
 
 	// Add subcommands here
 	root.AddCommand(opcmd.HealthCheckCmd())
-	root.AddCommand(opcmd.VersionCheckCmd(scheme))
 	root.AddCommand(&cobra.Command{
 		Short: "Print the version",
 		Use:   "version",
@@ -142,7 +137,7 @@ func startManager(cmd *cobra.Command, args []string) error {
 		Port:                   9443,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "16e1bc09.strange.love",
+		LeaderElectionID:       "16e1bc09.tempo.aaronforce.io",
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -161,67 +156,39 @@ func startManager(cmd *cobra.Command, args []string) error {
 
 	ctx := cmd.Context()
 
-	// CacheController which fetches CometBFT status in the background.
+	// CacheController which fetches Tempo node status in the background.
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 	statusClient := fullnode.NewStatusClient(mgr.GetClient())
-	cometClient := cosmos.NewCometClient(httpClient)
-	cacheController := cosmos.NewCacheController(
-		cosmos.NewStatusCollector(cometClient, 5*time.Second),
+	nodeClient := tempo.NewClient(httpClient)
+	cacheController := tempo.NewCacheController(
+		tempo.NewStatusCollector(nodeClient, 5*time.Second),
 		mgr.GetClient(),
-		mgr.GetEventRecorderFor(cosmos.CacheControllerName),
+		mgr.GetEventRecorderFor(tempo.CacheControllerName),
 	)
 	defer func() { _ = cacheController.Close() }()
 	if err = cacheController.SetupWithManager(ctx, mgr); err != nil {
-		return fmt.Errorf("unable to create CosmosCache controller: %w", err)
+		return fmt.Errorf("unable to create TempoCache controller: %w", err)
 	}
 
-	// The primary controller for CosmosFullNode.
+	// The primary controller for TempoFullNode.
 	if err = controllers.NewFullNode(
 		mgr.GetClient(),
-		mgr.GetEventRecorderFor(cosmosv1.CosmosFullNodeController),
+		mgr.GetEventRecorderFor(tempov1alpha1.TempoFullNodeController),
 		statusClient,
 		cacheController,
 	).SetupWithManager(ctx, mgr); err != nil {
-		return fmt.Errorf("unable to create CosmosFullNode controller: %w", err)
+		return fmt.Errorf("unable to create TempoFullNode controller: %w", err)
 	}
 
-	// An ancillary controller that supports CosmosFullNode.
+	// An ancillary controller that supports TempoFullNode.
 	if err = controllers.NewSelfHealing(
 		mgr.GetClient(),
-		mgr.GetEventRecorderFor(cosmosv1.SelfHealingController),
+		mgr.GetEventRecorderFor(tempov1alpha1.SelfHealingController),
 		statusClient,
 		httpClient,
 		cacheController,
 	).SetupWithManager(ctx, mgr); err != nil {
 		return fmt.Errorf("unable to create SelfHealing controller: %w", err)
-	}
-
-	// Test for presence of VolumeSnapshot CRD.
-	snapshotErr := controllers.IndexVolumeSnapshots(ctx, mgr)
-	if snapshotErr != nil {
-		setupLog.Info("Warning: VolumeSnapshot CRD not found, StatefulJob and ScheduledVolumeSnapshot controllers will be disabled")
-	}
-
-	// StatefulJobs
-	jobCtl := controllers.NewStatefulJob(
-		mgr.GetClient(),
-		mgr.GetEventRecorderFor(cosmosv1alpha1.StatefulJobController),
-		snapshotErr != nil,
-	)
-
-	if err = jobCtl.SetupWithManager(ctx, mgr); err != nil {
-		return fmt.Errorf("unable to create StatefulJob controller: %w", err)
-	}
-
-	// ScheduledVolumeSnapshots
-	if err = controllers.NewScheduledVolumeSnapshotReconciler(
-		mgr.GetClient(),
-		mgr.GetEventRecorderFor(cosmosv1alpha1.ScheduledVolumeSnapshotController),
-		statusClient,
-		cacheController,
-		snapshotErr != nil,
-	).SetupWithManager(ctx, mgr); err != nil {
-		return fmt.Errorf("unable to create ScheduledVolumeSnapshot controller: %w", err)
 	}
 
 	//+kubebuilder:scaffold:builder
@@ -233,7 +200,7 @@ func startManager(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("unable to set up ready check: %w", err)
 	}
 
-	setupLog.Info("Starting Cosmos Operator manager", "version", version.AppVersion())
+	setupLog.Info("Starting Tempo Operator manager", "version", version.AppVersion())
 	if err := mgr.Start(ctx); err != nil {
 		return fmt.Errorf("problem running manager: %w", err)
 	}

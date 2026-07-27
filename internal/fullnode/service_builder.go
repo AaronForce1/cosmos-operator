@@ -3,10 +3,10 @@ package fullnode
 import (
 	"fmt"
 
+	tempov1alpha1 "github.com/aaronforce1/cosmos-operator/api/v1alpha1"
+	"github.com/aaronforce1/cosmos-operator/internal/diff"
+	"github.com/aaronforce1/cosmos-operator/internal/kube"
 	"github.com/samber/lo"
-	cosmosv1 "github.com/strangelove-ventures/cosmos-operator/api/v1"
-	"github.com/strangelove-ventures/cosmos-operator/internal/diff"
-	"github.com/strangelove-ventures/cosmos-operator/internal/kube"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
@@ -15,31 +15,25 @@ const maxP2PServiceDefault = int32(1)
 
 // BuildServices returns a list of services given the crd.
 //
-// Creates services based on the node type:
-// - For regular nodes: Creates 1 RPC service and 1 p2p service per pod (replicas + 1 total)
-// - For sentry nodes: Creates 1 RPC service and 2 p2p services per pod (replicas * 2 + 1 total)
+// Creates a p2p service per pod, and a single RPC service when the JSON-RPC server is exposed
+// (spec.rpc.enabled, defaulting by role).
 //
 // P2P services diverge from traditional web and kubernetes architecture which typically uses a single
 // service backed by multiple pods. This is necessary because:
 //  1. Pods may be in various states even with proper readiness probes
-//  2. We need to prevent confusion or disruption in peer exchange (PEX) within CometBFT
-//  3. Using a single p2p service could lead to misinterpreted byzantine behavior if an outside peer
-//     discovers a pod out of sync after previously connecting to a synced pod through the same address
+//  2. An outside peer connecting to a single address must always reach the same node identity;
+//     a shared p2p service would route the same address to different nodes across connections.
 //
 // Services are created with either LoadBalancer (for external access) or ClusterIP type, controlled
 // by MaxP2PExternalAddresses setting.
-func BuildServices(crd *cosmosv1.CosmosFullNode) []diff.Resource[*corev1.Service] {
+func BuildServices(crd *tempov1alpha1.TempoFullNode) []diff.Resource[*corev1.Service] {
 	max := maxP2PServiceDefault
 	if v := crd.Spec.Service.MaxP2PExternalAddresses; v != nil {
 		max = *v
 	}
 	maxExternal := lo.Clamp(max, 0, crd.Spec.Replicas)
-	totalServices := crd.Spec.Replicas + 1
-	if crd.Spec.Type == cosmosv1.Sentry {
-		totalServices = (crd.Spec.Replicas * 2) + 1
-	}
 
-	svcs := make([]diff.Resource[*corev1.Service], 0, totalServices)
+	svcs := make([]diff.Resource[*corev1.Service], 0, crd.Spec.Replicas+1)
 
 	startOrdinal := crd.Spec.Ordinals.Start
 	for i := int32(0); i < crd.Spec.Replicas; i++ {
@@ -58,11 +52,18 @@ func BuildServices(crd *cosmosv1.CosmosFullNode) []diff.Resource[*corev1.Service
 			{
 				Name:       "p2p",
 				Protocol:   corev1.ProtocolTCP,
-				Port:       crd.Spec.ChainSpec.Comet.P2PPort(),
+				Port:       crd.P2PPort(),
 				TargetPort: intstr.FromString("p2p"),
+			},
+			{
+				Name:       "p2p-udp",
+				Protocol:   corev1.ProtocolUDP,
+				Port:       crd.P2PPort(),
+				TargetPort: intstr.FromString("p2p-udp"),
 			},
 		}
 		svc.Spec.Selector = map[string]string{kube.InstanceLabel: instanceName(crd, ordinal)}
+		kube.NormalizeMetadata(&svc.ObjectMeta)
 		if i < maxExternal {
 			preserveMergeInto(svc.Labels, crd.Spec.Service.P2PTemplate.Metadata.Labels)
 			preserveMergeInto(svc.Annotations, crd.Spec.Service.P2PTemplate.Metadata.Annotations)
@@ -75,48 +76,15 @@ func BuildServices(crd *cosmosv1.CosmosFullNode) []diff.Resource[*corev1.Service
 		svcs = append(svcs, diff.Adapt(&svc, len(svcs)))
 	}
 
-	// Add sentry services if needed
-	if crd.Spec.Type == cosmosv1.Sentry {
-		for i := int32(0); i < crd.Spec.Replicas; i++ {
-			ordinal := startOrdinal + i
-			var svc corev1.Service
-			svc.Name = sentryServiceName(crd, ordinal)
-			svc.Namespace = crd.Namespace
-			svc.Kind = "Service"
-			svc.APIVersion = "v1"
-
-			svc.Labels = defaultLabels(crd,
-				kube.InstanceLabel, instanceName(crd, ordinal),
-				kube.ComponentLabel, "cosmos-sentry",
-			)
-			svc.Annotations = map[string]string{}
-
-			svc.Spec.Ports = []corev1.ServicePort{
-				{
-					Name:       "sentry-privval",
-					Protocol:   corev1.ProtocolTCP,
-					Port:       privvalPort,
-					TargetPort: intstr.FromString("privval"),
-				},
-			}
-			svc.Spec.Selector = map[string]string{kube.InstanceLabel: instanceName(crd, ordinal)}
-
-			preserveMergeInto(svc.Labels, crd.Spec.Service.P2PTemplate.Metadata.Labels)
-			preserveMergeInto(svc.Annotations, crd.Spec.Service.P2PTemplate.Metadata.Annotations)
-			svc.Spec.Type = corev1.ServiceTypeClusterIP
-			svc.Spec.PublishNotReadyAddresses = true
-
-			svcs = append(svcs, diff.Adapt(&svc, len(svcs)))
-		}
+	// Add RPC service when the JSON-RPC server is exposed outside the pod.
+	if crd.RPCExposed() {
+		svcs = append(svcs, diff.Adapt(rpcService(crd), len(svcs)))
 	}
-
-	// Add RPC service
-	svcs = append(svcs, diff.Adapt(rpcService(crd), len(svcs)))
 
 	return svcs
 }
 
-func rpcService(crd *cosmosv1.CosmosFullNode) *corev1.Service {
+func rpcService(crd *tempov1alpha1.TempoFullNode) *corev1.Service {
 	var svc corev1.Service
 	svc.Name = rpcServiceName(crd)
 	svc.Namespace = crd.Namespace
@@ -128,35 +96,19 @@ func rpcService(crd *cosmosv1.CosmosFullNode) *corev1.Service {
 	svc.Annotations = map[string]string{}
 	svc.Spec.Ports = []corev1.ServicePort{
 		{
-			Name:       "api",
+			Name:       "http-rpc",
 			Protocol:   corev1.ProtocolTCP,
-			Port:       apiPort,
-			TargetPort: intstr.FromString("api"),
+			Port:       crd.RPCPort(),
+			TargetPort: intstr.FromString("http-rpc"),
 		},
-		{
-			Name:       "rosetta",
+	}
+	if crd.WSEnabled() {
+		svc.Spec.Ports = append(svc.Spec.Ports, corev1.ServicePort{
+			Name:       "ws",
 			Protocol:   corev1.ProtocolTCP,
-			Port:       rosettaPort,
-			TargetPort: intstr.FromString("rosetta"),
-		},
-		{
-			Name:       "grpc",
-			Protocol:   corev1.ProtocolTCP,
-			Port:       grpcPort,
-			TargetPort: intstr.FromString("grpc"),
-		},
-		{
-			Name:       "rpc",
-			Protocol:   corev1.ProtocolTCP,
-			Port:       crd.Spec.ChainSpec.Comet.RPCPort(),
-			TargetPort: intstr.FromString("rpc"),
-		},
-		{
-			Name:       "grpc-web",
-			Protocol:   corev1.ProtocolTCP,
-			Port:       grpcWebPort,
-			TargetPort: intstr.FromString("grpc-web"),
-		},
+			Port:       crd.WSPort(),
+			TargetPort: intstr.FromString("ws"),
+		})
 	}
 	svc.Spec.Selector = map[string]string{kube.NameLabel: appName(crd)}
 	svc.Spec.Type = corev1.ServiceTypeClusterIP
@@ -177,14 +129,10 @@ func rpcService(crd *cosmosv1.CosmosFullNode) *corev1.Service {
 	return &svc
 }
 
-func p2pServiceName(crd *cosmosv1.CosmosFullNode, ordinal int32) string {
+func p2pServiceName(crd *tempov1alpha1.TempoFullNode, ordinal int32) string {
 	return fmt.Sprintf("%s-p2p-%d", appName(crd), ordinal)
 }
 
-func sentryServiceName(crd *cosmosv1.CosmosFullNode, ordinal int32) string {
-	return fmt.Sprintf("%s-privval-%d", appName(crd), ordinal)
-}
-
-func rpcServiceName(crd *cosmosv1.CosmosFullNode) string {
+func rpcServiceName(crd *tempov1alpha1.TempoFullNode) string {
 	return fmt.Sprintf("%s-rpc", appName(crd))
 }

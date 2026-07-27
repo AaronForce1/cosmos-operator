@@ -7,10 +7,10 @@ import (
 	"math"
 	"time"
 
+	tempov1alpha1 "github.com/aaronforce1/cosmos-operator/api/v1alpha1"
+	"github.com/aaronforce1/cosmos-operator/internal/healthcheck"
+	"github.com/aaronforce1/cosmos-operator/internal/kube"
 	"github.com/samber/lo"
-	cosmosv1 "github.com/strangelove-ventures/cosmos-operator/api/v1"
-	"github.com/strangelove-ventures/cosmos-operator/internal/healthcheck"
-	"github.com/strangelove-ventures/cosmos-operator/internal/kube"
 	"golang.org/x/sync/errgroup"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -41,7 +41,7 @@ func NewDiskUsageCollector(diskClient DiskUsager, lister Reader) *DiskUsageColle
 //
 // It returns a slice of PVCDiskUsage objects representing the disk usage information for each PVC or an error
 // if fetching disk usage via all pods was unsuccessful.
-func (c DiskUsageCollector) CollectDiskUsage(ctx context.Context, crd *cosmosv1.CosmosFullNode) ([]PVCDiskUsage, error) {
+func (c DiskUsageCollector) CollectDiskUsage(ctx context.Context, crd *tempov1alpha1.TempoFullNode) ([]PVCDiskUsage, error) {
 	var pods corev1.PodList
 	if err := c.client.List(ctx, &pods,
 		client.InNamespace(crd.Namespace),
@@ -65,7 +65,7 @@ func (c DiskUsageCollector) CollectDiskUsage(ctx context.Context, crd *cosmosv1.
 			pod := pods.Items[i]
 			cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
-			resp, err := c.diskClient.DiskUsage(cctx, "http://"+pod.Status.PodIP, ChainHomeDir(crd))
+			resp, err := c.diskClient.DiskUsage(cctx, "http://"+pod.Status.PodIP, ConsensusDataDir)
 			if err != nil {
 				errs[i] = fmt.Errorf("pod %s %s: %w", pod.Name, resp.Dir, err)
 				return nil

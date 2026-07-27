@@ -2,251 +2,81 @@ package fullnode
 
 import (
 	"fmt"
-	"strconv"
 	"testing"
 
-	"github.com/samber/lo"
-	cosmosv1 "github.com/strangelove-ventures/cosmos-operator/api/v1"
-	"github.com/strangelove-ventures/cosmos-operator/internal/diff"
+	tempov1alpha1 "github.com/aaronforce1/cosmos-operator/api/v1alpha1"
 	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func TestBuildPods(t *testing.T) {
 	t.Parallel()
 
-	t.Run("happy path with starting ordinal", func(t *testing.T) {
-		crd := &cosmosv1.CosmosFullNode{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "agoric",
-				Namespace: "test",
-			},
-			Spec: cosmosv1.FullNodeSpec{
-				Replicas:  5,
-				ChainSpec: cosmosv1.ChainSpec{Network: "devnet"},
-				PodTemplate: cosmosv1.PodSpec{
-					Image: "busybox:latest",
-				},
-				InstanceOverrides: nil,
-				Ordinals: cosmosv1.Ordinals{
-					Start: 2,
-				},
-			},
-		}
+	t.Run("happy path", func(t *testing.T) {
+		crd := defaultCRD()
+		crd.Name = "agoric"
+		crd.Spec.Replicas = 5
 
-		cksums := make(ConfigChecksums)
-		for i := 0; i < int(crd.Spec.Replicas); i++ {
-			cksums[client.ObjectKey{Namespace: crd.Namespace, Name: fmt.Sprintf("agoric-%d", i+int(crd.Spec.Ordinals.Start))}] = strconv.Itoa(i + int(crd.Spec.Ordinals.Start))
-		}
-
-		pods, err := BuildPods(crd, cksums)
+		pods, err := BuildPods(&crd, testNow)
 		require.NoError(t, err)
-		require.Equal(t, 5, len(pods))
+		require.Len(t, pods, 5)
 
-		for i, r := range pods {
-			expectedOrdinal := crd.Spec.Ordinals.Start + int32(i)
-			require.Equal(t, int64(expectedOrdinal), r.Ordinal(), i)
-			require.NotEmpty(t, r.Revision(), i)
-			require.Equal(t, strconv.Itoa(int(expectedOrdinal)), r.Object().Annotations["cosmos.strange.love/config-checksum"])
-		}
-
-		want := lo.Map([]int{2, 3, 4, 5, 6}, func(i int, _ int) string {
-			return fmt.Sprintf("agoric-%d", i)
-		})
-		got := lo.Map(pods, func(pod diff.Resource[*corev1.Pod], _ int) string { return pod.Object().Name })
-		require.Equal(t, want, got)
-
-		pod, err := NewPodBuilder(crd).WithOrdinal(crd.Spec.Ordinals.Start).Build()
-		require.NoError(t, err)
-		require.Equal(t, pod.Spec, pods[0].Object().Spec)
-	})
-
-	t.Run("instance overrides with starting ordinal", func(t *testing.T) {
-		const (
-			image         = "agoric:latest"
-			overrideImage = "some_image:custom"
-			overridePod   = "agoric-7"
-		)
-		crd := &cosmosv1.CosmosFullNode{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "agoric",
-			},
-			Spec: cosmosv1.FullNodeSpec{
-				Replicas: 6,
-				PodTemplate: cosmosv1.PodSpec{
-					Image: image,
-				},
-				InstanceOverrides: map[string]cosmosv1.InstanceOverridesSpec{
-					"agoric-4":  {DisableStrategy: ptr(cosmosv1.DisablePod)},
-					"agoric-6":  {DisableStrategy: ptr(cosmosv1.DisableAll)},
-					overridePod: {Image: overrideImage},
-				},
-				Ordinals: cosmosv1.Ordinals{
-					Start: 2,
-				},
-			},
-		}
-
-		pods, err := BuildPods(crd, nil)
-		require.NoError(t, err)
-		require.Equal(t, 4, len(pods))
-
-		want := lo.Map([]int{2, 3, 5, 7}, func(i int, _ int) string {
-			return fmt.Sprintf("agoric-%d", i)
-		})
-		got := lo.Map(pods, func(pod diff.Resource[*corev1.Pod], _ int) string { return pod.Object().Name })
-		require.Equal(t, want, got)
-		for _, pod := range pods {
-			image := pod.Object().Spec.Containers[0].Image
-			if pod.Object().Name == overridePod {
-				require.Equal(t, overrideImage, image)
-			} else {
-				require.Equal(t, image, image)
-			}
+		for i, pod := range pods {
+			require.EqualValues(t, i, pod.Ordinal())
+			require.NotEmpty(t, pod.Revision())
+			require.Equal(t, fmt.Sprintf("agoric-%d", i), pod.Object().Name)
 		}
 	})
 
-	t.Run("scheduled volume snapshot pod candidate with starting ordinal", func(t *testing.T) {
-		crd := &cosmosv1.CosmosFullNode{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "agoric",
-			},
-			Spec: cosmosv1.FullNodeSpec{
-				Replicas: 6,
-				Ordinals: cosmosv1.Ordinals{Start: 2},
-			},
-			Status: cosmosv1.FullNodeStatus{
-				ScheduledSnapshotStatus: map[string]cosmosv1.FullNodeSnapshotStatus{
-					"some.scheduled.snapshot.1":       {PodCandidate: "agoric-3"},
-					"some.scheduled.snapshot.2":       {PodCandidate: "agoric-4"},
-					"some.scheduled.snapshot.ignored": {PodCandidate: "agoric-99"},
-				},
-			},
-		}
+	t.Run("non zero starting ordinal", func(t *testing.T) {
+		crd := defaultCRD()
+		crd.Name = "agoric"
+		crd.Spec.Replicas = 3
+		crd.Spec.Ordinals.Start = 10
 
-		pods, err := BuildPods(crd, nil)
+		pods, err := BuildPods(&crd, testNow)
 		require.NoError(t, err)
-		require.Equal(t, 4, len(pods))
-
-		want := lo.Map([]int{2, 5, 6, 7}, func(i int, _ int) string {
-			return fmt.Sprintf("agoric-%d", i)
-		})
-		got := lo.Map(pods, func(pod diff.Resource[*corev1.Pod], _ int) string { return pod.Object().Name })
-		require.Equal(t, want, got)
+		require.Len(t, pods, 3)
+		require.Equal(t, "agoric-10", pods[0].Object().Name)
+		require.Equal(t, "agoric-12", pods[2].Object().Name)
 	})
 
-	t.Run("happy path without starting ordinal", func(t *testing.T) {
-		crd := &cosmosv1.CosmosFullNode{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "agoric",
-				Namespace: "test",
-			},
-			Spec: cosmosv1.FullNodeSpec{
-				Replicas:  5,
-				ChainSpec: cosmosv1.ChainSpec{Network: "devnet"},
-				PodTemplate: cosmosv1.PodSpec{
-					Image: "busybox:latest",
-				},
-				InstanceOverrides: nil,
-			},
-		}
+	t.Run("validator clamped to one pod", func(t *testing.T) {
+		crd := defaultValidatorCRD()
+		crd.Name = "val"
+		crd.Spec.Replicas = 3 // Rejected by CEL; clamped here as defense in depth.
 
-		cksums := make(ConfigChecksums)
-		for i := 0; i < int(crd.Spec.Replicas); i++ {
-			cksums[client.ObjectKey{Namespace: crd.Namespace, Name: fmt.Sprintf("agoric-%d", i+int(crd.Spec.Ordinals.Start))}] = strconv.Itoa(i + int(crd.Spec.Ordinals.Start))
-		}
-
-		pods, err := BuildPods(crd, cksums)
+		pods, err := BuildPods(&crd, testNow)
 		require.NoError(t, err)
-		require.Equal(t, 5, len(pods))
-
-		for i, r := range pods {
-			expectedOrdinal := crd.Spec.Ordinals.Start + int32(i)
-			require.Equal(t, int64(expectedOrdinal), r.Ordinal(), i)
-			require.NotEmpty(t, r.Revision(), i)
-			require.Equal(t, strconv.Itoa(int(expectedOrdinal)), r.Object().Annotations["cosmos.strange.love/config-checksum"])
-		}
-
-		want := lo.Map([]int{0, 1, 2, 3, 4}, func(i int, _ int) string {
-			return fmt.Sprintf("agoric-%d", i)
-		})
-		got := lo.Map(pods, func(pod diff.Resource[*corev1.Pod], _ int) string { return pod.Object().Name })
-		require.Equal(t, want, got)
-
-		pod, err := NewPodBuilder(crd).WithOrdinal(crd.Spec.Ordinals.Start).Build()
-		require.NoError(t, err)
-		require.Equal(t, pod.Spec, pods[0].Object().Spec)
+		require.Len(t, pods, 1)
+		require.Equal(t, "val-0", pods[0].Object().Name)
 	})
 
-	t.Run("instance overrides without starting ordinal", func(t *testing.T) {
-		const (
-			image         = "agoric:latest"
-			overrideImage = "some_image:custom"
-			overridePod   = "agoric-5"
-		)
-		crd := &cosmosv1.CosmosFullNode{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "agoric",
-			},
-			Spec: cosmosv1.FullNodeSpec{
-				Replicas: 6,
-				PodTemplate: cosmosv1.PodSpec{
-					Image: image,
-				},
-				InstanceOverrides: map[string]cosmosv1.InstanceOverridesSpec{
-					"agoric-2":  {DisableStrategy: ptr(cosmosv1.DisablePod)},
-					"agoric-4":  {DisableStrategy: ptr(cosmosv1.DisableAll)},
-					overridePod: {Image: overrideImage},
-				},
-			},
+	t.Run("instance override disable", func(t *testing.T) {
+		crd := defaultCRD()
+		crd.Name = "agoric"
+		crd.Spec.Replicas = 3
+		crd.Spec.InstanceOverrides = map[string]tempov1alpha1.InstanceOverridesSpec{
+			"agoric-1": {DisableStrategy: ptr(tempov1alpha1.DisablePod)},
 		}
 
-		pods, err := BuildPods(crd, nil)
+		pods, err := BuildPods(&crd, testNow)
 		require.NoError(t, err)
-		require.Equal(t, 4, len(pods))
-
-		want := lo.Map([]int{0, 1, 3, 5}, func(i int, _ int) string {
-			return fmt.Sprintf("agoric-%d", i)
-		})
-		got := lo.Map(pods, func(pod diff.Resource[*corev1.Pod], _ int) string { return pod.Object().Name })
-		require.Equal(t, want, got)
-		for _, pod := range pods {
-			image := pod.Object().Spec.Containers[0].Image
-			if pod.Object().Name == overridePod {
-				require.Equal(t, overrideImage, image)
-			} else {
-				require.Equal(t, image, image)
-			}
-		}
+		require.Len(t, pods, 2)
+		require.Equal(t, "agoric-0", pods[0].Object().Name)
+		require.Equal(t, "agoric-2", pods[1].Object().Name)
 	})
 
-	t.Run("scheduled volume snapshot pod candidate without starting ordinal", func(t *testing.T) {
-		crd := &cosmosv1.CosmosFullNode{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "agoric",
-			},
-			Spec: cosmosv1.FullNodeSpec{
-				Replicas: 6,
-			},
-			Status: cosmosv1.FullNodeStatus{
-				ScheduledSnapshotStatus: map[string]cosmosv1.FullNodeSnapshotStatus{
-					"some.scheduled.snapshot.1":       {PodCandidate: "agoric-1"},
-					"some.scheduled.snapshot.2":       {PodCandidate: "agoric-2"},
-					"some.scheduled.snapshot.ignored": {PodCandidate: "agoric-99"},
-				},
-			},
-		}
+	t.Run("image change produces new revision", func(t *testing.T) {
+		crd := defaultCRD()
+		crd.Spec.Replicas = 1
 
-		pods, err := BuildPods(crd, nil)
+		pods1, err := BuildPods(&crd, testNow)
 		require.NoError(t, err)
-		require.Equal(t, 4, len(pods))
 
-		want := lo.Map([]int{0, 3, 4, 5}, func(i int, _ int) string {
-			return fmt.Sprintf("agoric-%d", i)
-		})
-		got := lo.Map(pods, func(pod diff.Resource[*corev1.Pod], _ int) string { return pod.Object().Name })
-		require.Equal(t, want, got)
+		crd.Spec.PodTemplate.Image = "ghcr.io/tempoxyz/tempo:v9.9.9"
+		pods2, err := BuildPods(&crd, testNow)
+		require.NoError(t, err)
+
+		require.NotEqual(t, pods1[0].Revision(), pods2[0].Revision())
 	})
 }

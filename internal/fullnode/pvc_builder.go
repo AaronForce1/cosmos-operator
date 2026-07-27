@@ -3,9 +3,9 @@ package fullnode
 import (
 	"fmt"
 
-	cosmosv1 "github.com/strangelove-ventures/cosmos-operator/api/v1"
-	"github.com/strangelove-ventures/cosmos-operator/internal/diff"
-	"github.com/strangelove-ventures/cosmos-operator/internal/kube"
+	tempov1alpha1 "github.com/aaronforce1/cosmos-operator/api/v1alpha1"
+	"github.com/aaronforce1/cosmos-operator/internal/diff"
+	"github.com/aaronforce1/cosmos-operator/internal/kube"
 	"gopkg.in/inf.v0"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -13,17 +13,18 @@ import (
 )
 
 const (
-	snapshotGrowthFactor = 102
+	autoScaleGrowthFactor = 102
 )
 
-var (
-	defaultAccessModes = []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}
-)
+// Consensus PVCs are always ReadWriteOnce: the single-attach semantics double as a fence against
+// two pods holding the same DKG signing share (double-sign guard).
+var consensusAccessModes = []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}
 
-// BuildPVCs outputs desired PVCs given the crd.
+// BuildPVCs outputs desired consensus-datadir PVCs given the crd.
+// There is deliberately no dataSource/autoDataSource seeding: cloning consensus state risks
+// equivocation, and the DKG share is network-recoverable anyway.
 func BuildPVCs(
-	crd *cosmosv1.CosmosFullNode,
-	dataSources map[int32]*dataSource,
+	crd *tempov1alpha1.TempoFullNode,
 	currentPVCs []*corev1.PersistentVolumeClaim,
 ) []diff.Resource[*corev1.PersistentVolumeClaim] {
 	base := corev1.PersistentVolumeClaim{
@@ -39,7 +40,11 @@ func BuildPVCs(
 	}
 
 	var pvcs []diff.Resource[*corev1.PersistentVolumeClaim]
-	for i := crd.Spec.Ordinals.Start; i < crd.Spec.Ordinals.Start+crd.Spec.Replicas; i++ {
+	replicas := crd.Spec.Replicas
+	if crd.IsValidator() && replicas > 1 {
+		replicas = 1
+	}
+	for i := crd.Spec.Ordinals.Start; i < crd.Spec.Ordinals.Start+replicas; i++ {
 		if pvcDisabled(crd, i) {
 			continue
 		}
@@ -50,31 +55,26 @@ func BuildPVCs(
 		podName := instanceName(crd, i)
 		pvc.Labels[kube.InstanceLabel] = podName
 
-		var dataSource *corev1.TypedLocalObjectReference
 		var existingSize resource.Quantity
-		if ds, ok := dataSources[i]; ok && ds != nil {
-			dataSource = ds.ref
-		} else {
-			for _, pvc := range currentPVCs {
-				if pvc.Name == name {
-					if pvc.DeletionTimestamp == nil && pvc.Status.Phase == corev1.ClaimBound {
-						existingSize = pvc.Status.Capacity[corev1.ResourceStorage]
-					}
-					break
+		for _, existing := range currentPVCs {
+			if existing.Name == name {
+				if existing.DeletionTimestamp == nil && existing.Status.Phase == corev1.ClaimBound {
+					existingSize = existing.Status.Capacity[corev1.ResourceStorage]
 				}
+				break
 			}
 		}
 
-		tpl := crd.Spec.VolumeClaimTemplate
+		tpl := crd.Spec.ConsensusVolume
 		if override, ok := crd.Spec.InstanceOverrides[podName]; ok {
-			if overrideTpl := override.VolumeClaimTemplate; overrideTpl != nil {
+			if overrideTpl := override.ConsensusVolume; overrideTpl != nil {
 				tpl = *overrideTpl
 			}
 		}
 
 		pvc.Spec = corev1.PersistentVolumeClaimSpec{
-			AccessModes:      sliceOrDefault(tpl.AccessModes, defaultAccessModes),
-			Resources:        pvcResources(crd, name, dataSources[i], existingSize, tpl.Resources),
+			AccessModes:      consensusAccessModes,
+			Resources:        pvcResources(crd, name, existingSize, tpl.Resources),
 			StorageClassName: ptr(tpl.StorageClassName),
 			VolumeMode:       valOrDefault(tpl.VolumeMode, ptr(corev1.PersistentVolumeFilesystem)),
 		}
@@ -84,30 +84,25 @@ func BuildPVCs(
 		kube.NormalizeMetadata(&pvc.ObjectMeta)
 
 		pvcs = append(pvcs, diff.Adapt(pvc, i))
-		pvc.Spec.DataSource = dataSource
 	}
 	return pvcs
 }
 
+// pvcResources sizes the PVC grow-only: the largest of the template request, a pending
+// self-healing auto-scale request (with padding), and the currently bound capacity.
 func pvcResources(
-	crd *cosmosv1.CosmosFullNode,
+	crd *tempov1alpha1.TempoFullNode,
 	name string,
-	dataSource *dataSource,
 	existingSize resource.Quantity,
 	tplResources corev1.ResourceRequirements,
 ) corev1.ResourceRequirements {
 	reqs := tplResources.DeepCopy()
 
-	if dataSource != nil {
-		reqs.Requests[corev1.ResourceStorage] = dataSource.size
-		return *reqs
-	}
-
 	if autoScale := crd.Status.SelfHealing.PVCAutoScale; autoScale != nil {
 		if status, ok := autoScale[name]; ok {
 			requestedSize := status.RequestedSize.DeepCopy()
 			newSize := requestedSize.AsDec()
-			sizeWithPadding := resource.NewDecimalQuantity(*newSize.Mul(newSize, inf.NewDec(snapshotGrowthFactor, 2)), resource.DecimalSI)
+			sizeWithPadding := resource.NewDecimalQuantity(*newSize.Mul(newSize, inf.NewDec(autoScaleGrowthFactor, 2)), resource.DecimalSI)
 			if sizeWithPadding.Cmp(reqs.Requests[corev1.ResourceStorage]) > 0 {
 				reqs.Requests[corev1.ResourceStorage] = *sizeWithPadding
 			}
@@ -120,13 +115,14 @@ func pvcResources(
 
 	return *reqs
 }
-func pvcDisabled(crd *cosmosv1.CosmosFullNode, ordinal int32) bool {
+
+func pvcDisabled(crd *tempov1alpha1.TempoFullNode, ordinal int32) bool {
 	name := instanceName(crd, ordinal)
 	disable := crd.Spec.InstanceOverrides[name].DisableStrategy
-	return disable != nil && *disable == cosmosv1.DisableAll
+	return disable != nil && *disable == tempov1alpha1.DisableAll
 }
 
-func pvcName(crd *cosmosv1.CosmosFullNode, ordinal int32) string {
+func pvcName(crd *tempov1alpha1.TempoFullNode, ordinal int32) string {
 	name := fmt.Sprintf("pvc-%s-%d", appName(crd), ordinal)
 	return kube.ToName(name)
 }

@@ -3,7 +3,7 @@ package kube
 import (
 	"testing"
 
-	cosmosv1 "github.com/strangelove-ventures/cosmos-operator/api/v1"
+	tempov1alpha1 "github.com/aaronforce1/cosmos-operator/api/v1alpha1"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -12,7 +12,7 @@ import (
 
 func TestIndexOwner(t *testing.T) {
 	scheme := runtime.NewScheme()
-	err := cosmosv1.AddToScheme(scheme)
+	err := tempov1alpha1.AddToScheme(scheme)
 	if err != nil {
 		panic(err)
 	}
@@ -21,20 +21,20 @@ func TestIndexOwner(t *testing.T) {
 
 	t.Run("happy path", func(t *testing.T) {
 		resource := &corev1.Pod{}
-		crd := &cosmosv1.CosmosFullNode{}
+		crd := &tempov1alpha1.TempoFullNode{}
 		crd.Name = "test"
 
 		err = ctrl.SetControllerReference(crd, resource, scheme)
 		require.NoError(t, err)
 
-		index := IndexOwner[*corev1.Pod]("CosmosFullNode")
+		index := IndexOwner[*corev1.Pod]("TempoFullNode")
 		got := index(resource)
 
 		require.Equal(t, []string{"test"}, got)
 	})
 
 	t.Run("no controller", func(t *testing.T) {
-		index := IndexOwner[*corev1.Pod]("CosmosFullNode")
+		index := IndexOwner[*corev1.Pod]("TempoFullNode")
 		got := index(&corev1.Pod{})
 
 		require.Nil(t, got)
@@ -42,7 +42,7 @@ func TestIndexOwner(t *testing.T) {
 
 	t.Run("kind mismatch", func(t *testing.T) {
 		resource := &corev1.Pod{}
-		crd := &cosmosv1.CosmosFullNode{}
+		crd := &tempov1alpha1.TempoFullNode{}
 		crd.Name = "test"
 
 		err = ctrl.SetControllerReference(crd, resource, scheme)

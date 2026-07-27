@@ -1,131 +1,130 @@
-[![Conforms to README.lint](https://img.shields.io/badge/README.lint-conforming-brightgreen)](https://github.com/strangelove-ventures/readme-dot-lint)
-[![Project Status: Initial Release](https://img.shields.io/badge/repo%20status-active-green.svg?style=flat-square)](https://www.repostatus.org/#active)
-[![GoDoc](https://img.shields.io/badge/godoc-reference-blue?style=flat-square&logo=go)](https://pkg.go.dev/github.com/strangelove-ventures/cosmos-operator)
-[![Go Report Card](https://goreportcard.com/badge/github.com/strangelove-ventures/cosmos-operator)](https://goreportcard.com/report/github.com/strangelove-ventures/cosmos-operator)
-[![License: Apache-2.0](https://img.shields.io/github/license/strangelove-ventures/cosmos-operator.svg?style=flat-square)](https://github.com/strangelove-ventures/cosmos-operator/blob/main/LICENSE)
-[![Version](https://img.shields.io/github/tag/strangelove-ventures/cosmos-operator.svg?style=flat-square)](https://github.com/cosmos/strangelove-ventures/cosmos-operator)
+# Tempo Operator
 
-Cosmos Operator is a [Kubernetes Operator](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/) primarily for blockchains built with the [Cosmos SDK](https://github.com/cosmos/cosmos-sdk). It also supports [Penumbra](https://github.com/penumbra-zone/penumbra) and other chains which use [CometBFT](https://github.com/cometbft/cometbft) for consensus. 
+A [Kubernetes Operator](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/) for
+[Tempo](https://github.com/tempoxyz/tempo) nodes — a reth-SDK execution layer plus Commonware
+Threshold Simplex consensus in a single `tempo` binary — and compatible Tempo forks.
 
-🌌 Why use Cosmos Operator?
-=============================
+This project is a hard fork of
+[strangelove-ventures/cosmos-operator](https://github.com/strangelove-ventures/cosmos-operator),
+re-targeted from Cosmos SDK / CometBFT chains to Tempo. The Kubernetes machinery (per-ordinal
+identity, diff-driven reconciliation, rolling updates, self-healing) is inherited; everything
+chain-facing was rewritten. See `openspec/changes/convert-cosmos-operator-to-tempo-reth-evm/`
+for the full porting analysis.
 
-Kubernetes ("K8") makes DevOps easier. Cosmos Operator makes Kubernetes easier for use in the Cosmos Ecosystem.
+## What it does
 
-K8 provides a foundation for creating highly-available, scalable, fault-tolerant applications. It provides well-known DevOps patterns and abstractions (as opposed to traditional DevOps which often requires "re-inventing the wheel").
+One CRD: **`TempoFullNode`** (`tempo.aaronforce.io/v1alpha1`).
 
-Furthermore, the [Operator Pattern][] allows us to mix infrastructure with business logic,
-thus minimizing human intervention and human error.
+- **Roles:** `validator`, `rpc`, `archive` — role-driven defaults for `--follow`, snapshot
+  profiles, RPC exposure, and safety guards. [docs/node_roles.md](docs/node_roles.md)
+- **Storage that matches Tempo's rules:** execution datadir on node-local (NVMe) ephemeral
+  storage, re-seeded by `tempo download` on loss; consensus datadir (DKG share) on a small
+  per-ordinal RWO PVC with auto-scaling. Network-attached storage for execution state is not
+  offered, on purpose. [docs/storage.md](docs/storage.md)
+- **Snapshot bootstrap:** an idempotent `tempo download` init container with `Auto`/`Always`/
+  `Never` policies and role-derived `minimal`/`full`/`archive` profiles, preserving node
+  identity files (`discovery-secret`, `known-peers.json`).
+- **Validator key handling:** signing key + encryption secret mounted read-only at mode 0400
+  from Secrets you control; the DKG share persists on the consensus PVC across reschedules.
+  The operator never reads or logs key material. [docs/key_management.md](docs/key_management.md)
+- **Double-sign guards:** replicas ≤ 1 for validators (CEL-enforced), creates gated on full
+  termination of the predecessor, an RWO attach fence, a `WaitingForFence` phase instead of
+  force-deletes, and drift mitigation that never touches validators.
+  [docs/double_sign_safety.md](docs/double_sign_safety.md)
+- **Timestamp-based upgrades:** `spec.scheduledUpgrades` rolls the fleet onto a new image ahead
+  of a hardfork's activation timestamp — Tempo has no halt-height mechanism.
+  [docs/upgrades.md](docs/upgrades.md)
+- **Health that matches reth:** a JSON-RPC health model (`eth_syncing`, `eth_blockNumber`,
+  `net_peerCount`, block-age guard) driving readiness probes, service endpoint membership, and
+  rollout budgets; unhealthy pods leave the RPC service automatically.
+- **Services:** per-pod p2p Services (30303 TCP+UDP, optionally LoadBalancer) and one aggregate
+  RPC Service (8545, optional 8546 websocket).
+- **Self-healing:** consensus-PVC auto-scaling and height-drift mitigation.
 
+## Quick start
 
-🌌🌌 Who benefits from Cosmos Operator?
-=============================
+Requires a cluster with node-local SSD ephemeral storage for the execution datadir — read
+[docs/storage.md](docs/storage.md) first; on GKE that means Standard node pools with
+`--ephemeral-storage-local-ssd`.
 
-People who'd like to use the [Operator Pattern][] to "configure it and forget it".
+Install with Helm (installs the CRD and the operator):
 
-> The [operator pattern][] aims to capture the key aim of a human operator who is managing a service or set of services. Human operators who look after specific applications and services have deep knowledge of how the system ought to behave, how to deploy it, and how to react if there are problems.
+```sh
+helm install tempo-operator ./charts/tempo-operator \
+  --namespace tempo-operator-system --create-namespace
+```
 
-> People who run workloads on Kubernetes often like to use automation to take care of repeatable tasks. The [operator pattern][] captures how you can write code to automate a task beyond what Kubernetes itself provides.
+(or with kustomize: `make deploy IMG=ghcr.io/aaronforce1/tempo-operator:<version>`)
 
+Then deploy nodes:
 
-🌌🌌🌌 What does Cosmos Operator do?
-=============================
+```sh
+# Two RPC nodes on mainnet
+kubectl apply -f config/samples/tempo_v1alpha1_tempofullnode.yaml
+```
 
-Cosmos Operator is a [Kubernetes Operator](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/) for blockchains built with the [Cosmos SDK](https://github.com/cosmos/cosmos-sdk). Write your own Custom Resource Definition ("CRD") as a `yaml` file and deploy with ease!
+Sample manifests:
 
+- [`tempo_v1alpha1_tempofullnode.yaml`](config/samples/tempo_v1alpha1_tempofullnode.yaml) — minimal RPC nodes
+- [`tempo_v1alpha1_tempofullnode_testnet.yaml`](config/samples/tempo_v1alpha1_tempofullnode_testnet.yaml) — dev-sized node syncing the moderato testnet, with snapshot-source overrides shown
+- [`tempo_v1alpha1_tempofullnode_validator.yaml`](config/samples/tempo_v1alpha1_tempofullnode_validator.yaml) — validator with key prerequisites
+- [`tempo_v1alpha1_tempofullnode_full.yaml`](config/samples/tempo_v1alpha1_tempofullnode_full.yaml) — every field, commented
 
-🌌🌌🌌🌌 How do I use Cosmos Operator?
-=============================
+Any flag the CRD does not model can be passed verbatim via `spec.chain.additionalArgs`
+(and `spec.chain.additionalDownloadArgs` for `tempo download`).
 
-## Quick Start
+### Snapshot bootstrap
 
-See the [quick start guide](./docs/quick_start.md).
+Every node restores from a snapshot before starting (unless `spec.snapshotInit.policy: Never`):
+an init container runs `tempo download` against the exec datadir, idempotently, choosing the
+snapshot flavor from the role (`minimal`/`full`/`archive`). To pull from your own snapshot
+source instead of the chain default, set `spec.snapshotInit.url` and/or
+`spec.snapshotInit.manifestURL` — they map to `tempo download --url/--manifest-url`.
 
-## CosmosFullNode CRD
+## Local development (devcontainer + kind)
 
-CosmosFullNode is the flagship CRD. Its purpose is to deploy highly-available, fault-tolerant blockchain nodes.
+Open the repo in a devcontainer (VS Code "Reopen in Container" or GitHub Codespaces); it brings
+Go, docker-in-docker, kind, kubectl, and helm. Then:
 
-The CosmosFullNode controller is like a StatefulSet for running Cosmos SDK blockchains.
+```sh
+make dev-up        # kind cluster + locally-built operator image + helm install (CRD + operator)
+make dev-sample    # TempoFullNode syncing against the moderato testnet
+kubectl get tempofullnodes -w
+make dev-down      # tear down
+```
 
-A CosmosFullNode can be configured to run as an RPC node, a validator sentry, or a seed node. All configurations can be used as persistent peers.
+`make dev-up` is idempotent — re-run it after code changes to rebuild and roll the operator.
 
-As of this writing, Strangelove has been running CosmosFullNode in production for over a year.
+## Development
 
-## Samples
+```sh
+make manifests generate   # controller-gen: CRDs + deepcopy (also syncs the Helm chart's crds/)
+make test                 # unit tests (-short)
+make test-envtest         # controller tests against a real kube-apiserver (validates samples too)
+make test-e2e-kind        # kind smoke test syncing against the moderato testnet
+make lint                 # golangci-lint
+make helm-lint            # lint + render the Helm chart
+```
 
-- [Minimal example yaml](./config/samples/cosmos_v1_cosmosfullnode.yaml)
-- [Full example yaml](./config/samples/cosmos_v1_cosmosfullnode_full.yaml)
-- [Penumbra example yaml](./config/samples/cosmos_v1_cosmosfullnode_penumbra.yaml)
+Layout:
 
-## Support CRDs
+- `api/v1alpha1` — the `TempoFullNode` types.
+- `controllers` — the `TempoFullNode` reconciler (services → pods → PVCs), the self-healing
+  reconciler, and the status cache controller.
+- `internal/fullnode` — builders (pod, PVC, service), rollout control with the double-sign
+  guards, scheduled-upgrade image resolution.
+- `internal/tempo` — JSON-RPC client and pod status collection/caching.
+- `internal/healthcheck` — the sidecar server (`/` sync probe with the 200/422/503 contract,
+  `/disk` usage) run from the operator image inside each pod.
 
-These CRDs are part of the operator and serve to support CosmosFullNodes.
+## Caveats
 
-- [ScheduledVolumeSnapshot](./docs/scheduled_volume_snapshot.md)
-- [StatefulJob](./docs/stateful_job.md)
+- Flag names for p2p/discovery (`--port`, `--discovery.*`), websockets, and the exact
+  `--consensus.secret` file-vs-FIFO semantics come from public Tempo docs and reth conventions;
+  verify against `tempo node --help` for the release you run, and use `additionalArgs` to adapt.
+  If a modeled flag is wrong for your release, file an issue.
+- GKE Autopilot is unvalidated; target GKE Standard.
 
-### Why not a StatefulSet?
+## License
 
-Each pod requires different config, such as peer settings in config.toml and mounted node keys. Therefore, a blanket
-template as found in StatefulSet did not suffice.
-
-Additionally, CosmosFullNode gives you more control over individual pod and pvc pairs vs. a StatefulSet to help the human operator debug and recover from situations such as a corrupted PVCs.
-
-
-🌌🌌🌌🌌🌌 Extras
-=============================
-
-# Disclaimers
-
-- Tested on Google's GKE and Bare-metal with `Kubeadm`. Although kubernetes is portable, we cannot guarantee or provide support for AWS, Azure, or other kubernetes providers.
-- Requires a recent version of kubernetes: v1.23+.
-- CosmosFullNode: The chain must be built from the [Cosmos SDK](https://github.com/cosmos/cosmos-sdk).
-- CosmosFullNode: Validator sentries require a remote signer such as [horcrux](https://github.com/strangelove-ventures/horcrux).
-- CosmosFullNode: The controller requires [heighliner](https://github.com/strangelove-ventures/heighliner) images. If you build your own image, you will need a shell `sh` and set the uid:gid to 1025:1025. If running as a validator sentry, you need `sleep` as well.
-- CosmosFullNode: May not work for all Cosmos chains. (Some chains diverge from common conventions.) Strangelove has yet to encounter a Cosmos chain that does not work with this operator.
-
-# Contributing
-
-See the [contributing guide](./CONTRIBUTING.md).
-
-# Best Practices
-
-See the [best practices guide for CosmosFullNode](./docs/fullnode_best_practices.md).
-
-# Roadmap
-
-Disclaimer: Strangelove has not committed to these enhancements and cannot estimate when they will be completed.
-
-- [x] Scheduled upgrades. Set the upgrade height and image version, optionally setting halt height. The controller performs a rolling update with the new image version after the committed height.
-- [x] Support configuration suitable for validator sentries.
-- [x] Reliable, persistent peer support.
-- [x] Quicker p2p discovery using private peers.
-- [ ] Advanced readiness probe behavior. (The CometBFT rpc status endpoint is not always reliable.)
-- [x] Automatic rollout for PVC resizing. (Currently human intervention required to restart pods after PVC resized.) Requires ExpandInUsePersistentVolumes feature gate.
-- [x] Automatic PVC resizing. The controller increases PVC size once storage reaches a configured threshold; e.g. 80% full.
-- [ ] Bootstrap config using the chain registry. Query the chain registry and set config based on the registry.
-- [ ] Validate p2p such as peers, seeds, etc. and filter out non-responsive peers.
-- [ ] HPA support.
-- [ ] Automatic upgrades. Controller monitors governance and performs upgrade without any human intervention.
-- [ ] Corrupt data recovery. Detect when a PVC may have corrupted data. Restore data from a recent VolumeSnapshot.
-- [x] Safe, automatic backups. Create periodic VolumeSnapshots of PVCs while minimizing chance of data corruption during snapshot creation.
-
-# License
-
-Copyright 2023 Strangelove Ventures LLC.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
----
-
-[Operator Pattern]: https://kubernetes.io/docs/concepts/extend-kubernetes/operator/#operators-in-kubernetes
+Apache 2.0 — see [LICENSE](LICENSE). Original work © Strangelove Ventures LLC.
