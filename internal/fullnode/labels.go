@@ -4,8 +4,8 @@ import (
 	"errors"
 	"fmt"
 
-	cosmosv1 "github.com/strangelove-ventures/cosmos-operator/api/v1"
-	"github.com/strangelove-ventures/cosmos-operator/internal/kube"
+	cosmosv1 "github.com/aaronforce1/cosmos-operator/api/v1"
+	"github.com/aaronforce1/cosmos-operator/internal/kube"
 )
 
 const (

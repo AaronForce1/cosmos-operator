@@ -6,11 +6,11 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/aaronforce1/cosmos-operator/internal/cosmos"
+	"github.com/aaronforce1/cosmos-operator/internal/healthcheck"
 	"github.com/go-logr/zapr"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"github.com/strangelove-ventures/cosmos-operator/internal/cosmos"
-	"github.com/strangelove-ventures/cosmos-operator/internal/healthcheck"
 	"golang.org/x/sync/errgroup"
 )
 

@@ -1,4 +1,4 @@
-module github.com/strangelove-ventures/cosmos-operator
+module github.com/aaronforce1/cosmos-operator
 
 go 1.23.2
 

@@ -3,10 +3,10 @@ package fullnode
 import (
 	"fmt"
 
+	cosmosv1 "github.com/aaronforce1/cosmos-operator/api/v1"
+	"github.com/aaronforce1/cosmos-operator/internal/diff"
+	"github.com/aaronforce1/cosmos-operator/internal/kube"
 	"github.com/samber/lo"
-	cosmosv1 "github.com/strangelove-ventures/cosmos-operator/api/v1"
-	"github.com/strangelove-ventures/cosmos-operator/internal/diff"
-	"github.com/strangelove-ventures/cosmos-operator/internal/kube"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )

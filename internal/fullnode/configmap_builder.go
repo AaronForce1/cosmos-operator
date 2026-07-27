@@ -8,11 +8,11 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	cosmosv1 "github.com/aaronforce1/cosmos-operator/api/v1"
+	"github.com/aaronforce1/cosmos-operator/internal/diff"
+	"github.com/aaronforce1/cosmos-operator/internal/kube"
 	"github.com/peterbourgon/mergemap"
 	"github.com/samber/lo"
-	cosmosv1 "github.com/strangelove-ventures/cosmos-operator/api/v1"
-	"github.com/strangelove-ventures/cosmos-operator/internal/diff"
-	"github.com/strangelove-ventures/cosmos-operator/internal/kube"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )

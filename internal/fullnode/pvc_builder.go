@@ -3,9 +3,9 @@ package fullnode
 import (
 	"fmt"
 
-	cosmosv1 "github.com/strangelove-ventures/cosmos-operator/api/v1"
-	"github.com/strangelove-ventures/cosmos-operator/internal/diff"
-	"github.com/strangelove-ventures/cosmos-operator/internal/kube"
+	cosmosv1 "github.com/aaronforce1/cosmos-operator/api/v1"
+	"github.com/aaronforce1/cosmos-operator/internal/diff"
+	"github.com/aaronforce1/cosmos-operator/internal/kube"
 	"gopkg.in/inf.v0"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"

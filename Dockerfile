@@ -20,7 +20,7 @@ COPY internal/ internal/
 ARG VERSION
 
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH \
-    go build -ldflags "-X github.com/strangelove-ventures/cosmos-operator/internal/version.version=$VERSION" -a -o manager .
+    go build -ldflags "-X github.com/aaronforce1/cosmos-operator/internal/version.version=$VERSION" -a -o manager .
 
 # Build final image from scratch
 FROM scratch

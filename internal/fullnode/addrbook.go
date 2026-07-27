@@ -4,7 +4,7 @@ import (
 	_ "embed"
 	"fmt"
 
-	cosmosv1 "github.com/strangelove-ventures/cosmos-operator/api/v1"
+	cosmosv1 "github.com/aaronforce1/cosmos-operator/api/v1"
 )
 
 var (
