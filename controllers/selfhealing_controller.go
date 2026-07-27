@@ -23,11 +23,11 @@ import (
 	"net/http"
 	"time"
 
-	cosmosv1 "github.com/aaronforce1/cosmos-operator/api/v1"
-	"github.com/aaronforce1/cosmos-operator/internal/cosmos"
+	tempov1alpha1 "github.com/aaronforce1/cosmos-operator/api/v1alpha1"
 	"github.com/aaronforce1/cosmos-operator/internal/fullnode"
 	"github.com/aaronforce1/cosmos-operator/internal/healthcheck"
 	"github.com/aaronforce1/cosmos-operator/internal/kube"
+	"github.com/aaronforce1/cosmos-operator/internal/tempo"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -37,7 +37,7 @@ import (
 // SelfHealingReconciler reconciles the self healing portion of a CosmosFullNode object
 type SelfHealingReconciler struct {
 	client.Client
-	cacheController *cosmos.CacheController
+	cacheController *tempo.CacheController
 	diskClient      *fullnode.DiskUsageCollector
 	driftDetector   fullnode.DriftDetection
 	pvcAutoScaler   *fullnode.PVCAutoScaler
@@ -49,7 +49,7 @@ func NewSelfHealing(
 	recorder record.EventRecorder,
 	statusClient *fullnode.StatusClient,
 	httpClient *http.Client,
-	cacheController *cosmos.CacheController,
+	cacheController *tempo.CacheController,
 ) *SelfHealingReconciler {
 	return &SelfHealingReconciler{
 		Client:          client,
@@ -65,10 +65,10 @@ func NewSelfHealing(
 // updates a CosmosFullNode status subresource thus triggering another reconcile loop. The CosmosFullNode
 // uses the status object to reconcile its state.
 func (r *SelfHealingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx).WithName(cosmosv1.SelfHealingController)
+	logger := log.FromContext(ctx).WithName(tempov1alpha1.SelfHealingController)
 	logger.V(1).Info("Entering reconcile loop", "request", req.NamespacedName)
 
-	crd := new(cosmosv1.CosmosFullNode)
+	crd := new(tempov1alpha1.TempoFullNode)
 	if err := r.Get(ctx, req.NamespacedName, crd); err != nil {
 		// Ignore not found errors because can't be fixed by an immediate requeue. We'll have to wait for next notification.
 		// Also, will get "not found" error if crd is deleted.
@@ -89,7 +89,7 @@ func (r *SelfHealingReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
 }
 
-func (r *SelfHealingReconciler) pvcAutoScale(ctx context.Context, reporter kube.Reporter, crd *cosmosv1.CosmosFullNode) {
+func (r *SelfHealingReconciler) pvcAutoScale(ctx context.Context, reporter kube.Reporter, crd *tempov1alpha1.TempoFullNode) {
 	if crd.Spec.SelfHeal.PVCAutoScale == nil {
 		return
 	}
@@ -114,15 +114,22 @@ func (r *SelfHealingReconciler) pvcAutoScale(ctx context.Context, reporter kube.
 	reporter.RecordInfo("PVCAutoScale", msg)
 }
 
-func (r *SelfHealingReconciler) mitigateHeightDrift(ctx context.Context, reporter kube.Reporter, crd *cosmosv1.CosmosFullNode) {
+func (r *SelfHealingReconciler) mitigateHeightDrift(ctx context.Context, reporter kube.Reporter, crd *tempov1alpha1.TempoFullNode) {
 	if crd.Spec.SelfHeal.HeightDriftMitigation == nil {
+		return
+	}
+
+	// Double-sign guard: never auto-delete a validator pod. All validator pod deletion flows
+	// through the gated PodControl path only.
+	if crd.IsValidator() {
+		reporter.RecordInfo("HeightDriftMitigationSkipped", "Height drift mitigation does not delete validator pods (double-sign guard); investigate a lagging validator manually.")
 		return
 	}
 
 	pods := r.driftDetector.LaggingPods(ctx, crd)
 	var deleted int
 	for _, pod := range pods {
-		// CosmosFullNodeController will detect missing pod and re-create it.
+		// TempoFullNodeController will detect missing pod and re-create it.
 		if err := r.Delete(ctx, pod); kube.IgnoreNotFound(err) != nil {
 			reporter.Error(err, "Failed to delete pod", "pod", pod.Name)
 			reporter.RecordError("HeightDriftMitigationDeletePod", err)
@@ -142,6 +149,6 @@ func (r *SelfHealingReconciler) SetupWithManager(_ context.Context, mgr ctrl.Man
 	// We do not have to index Pods because the CosmosFullNodeReconciler already does so.
 	// If we repeat it here, the manager returns an error.
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&cosmosv1.CosmosFullNode{}).
+		For(&tempov1alpha1.TempoFullNode{}).
 		Complete(r)
 }

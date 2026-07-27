@@ -1,4 +1,4 @@
-package cosmos
+package tempo
 
 import (
 	"context"
@@ -7,26 +7,27 @@ import (
 	"sort"
 	"time"
 
+	tempov1alpha1 "github.com/aaronforce1/cosmos-operator/api/v1alpha1"
 	"golang.org/x/sync/errgroup"
 	corev1 "k8s.io/api/core/v1"
 )
 
-// Statuser calls the RPC status endpoint.
+// Statuser fetches a Tempo node's sync state via its JSON-RPC endpoint.
 type Statuser interface {
-	Status(ctx context.Context, rpcHost string) (CometStatus, error)
+	Status(ctx context.Context, rpcHost string) (NodeStatus, error)
 }
 
-// StatusCollector collects the CometBFT status of all pods owned by a controller.
+// StatusCollector collects the node status of all pods owned by a controller.
 type StatusCollector struct {
-	comet   Statuser
+	client  Statuser
 	timeout time.Duration
 }
 
 // NewStatusCollector returns a valid StatusCollector.
 // Timeout is exposed here because it is important for good performance in reconcile loops,
 // and reminds callers to set it.
-func NewStatusCollector(comet Statuser, timeout time.Duration) *StatusCollector {
-	return &StatusCollector{comet: comet, timeout: timeout}
+func NewStatusCollector(client Statuser, timeout time.Duration) *StatusCollector {
+	return &StatusCollector{client: client, timeout: timeout}
 }
 
 // Collect returns a StatusCollection for the given pods.
@@ -47,11 +48,11 @@ func (coll StatusCollector) Collect(ctx context.Context, pods []corev1.Pod) Stat
 				statuses[i].Err = errors.New("pod has no IP")
 				return nil
 			}
-			var rpcPort int32 = 26657
+			rpcPort := tempov1alpha1.DefaultRPCPort
 			for _, c := range pod.Spec.Containers {
 				if c.Name == "node" {
 					for _, p := range c.Ports {
-						if p.Name == "rpc" {
+						if p.Name == "http-rpc" {
 							rpcPort = p.ContainerPort
 							break
 						}
@@ -62,7 +63,7 @@ func (coll StatusCollector) Collect(ctx context.Context, pods []corev1.Pod) Stat
 			host := fmt.Sprintf("http://%s:%d", ip, rpcPort)
 			cctx, cancel := context.WithTimeout(ctx, coll.timeout)
 			defer cancel()
-			resp, err := coll.comet.Status(cctx, host)
+			resp, err := coll.client.Status(cctx, host)
 			if err != nil {
 				statuses[i].Err = err
 				return nil

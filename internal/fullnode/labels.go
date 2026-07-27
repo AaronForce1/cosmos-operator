@@ -4,31 +4,27 @@ import (
 	"errors"
 	"fmt"
 
-	cosmosv1 "github.com/aaronforce1/cosmos-operator/api/v1"
+	tempov1alpha1 "github.com/aaronforce1/cosmos-operator/api/v1alpha1"
 	"github.com/aaronforce1/cosmos-operator/internal/kube"
 )
 
 const (
-	networkLabel = "cosmos.strange.love/network"
-	typeLabel    = "cosmos.strange.love/type"
+	chainLabel = "tempo.aaronforce.io/chain"
+	roleLabel  = "tempo.aaronforce.io/role"
 )
 
 // kv is a list of extra kv pairs to add to the labels. Must be even.
-func defaultLabels(crd *cosmosv1.CosmosFullNode, kvPairs ...string) map[string]string {
+func defaultLabels(crd *tempov1alpha1.TempoFullNode, kvPairs ...string) map[string]string {
 	if len(kvPairs)%2 != 0 {
 		panic(errors.New("key/value pairs must be even"))
 	}
-	nodeType := cosmosv1.FullNode
-	if crd.Spec.Type != "" {
-		nodeType = crd.Spec.Type
-	}
 	labels := map[string]string{
-		kube.ControllerLabel: "cosmos-operator",
-		kube.ComponentLabel:  cosmosv1.CosmosFullNodeController,
+		kube.ControllerLabel: "tempo-operator",
+		kube.ComponentLabel:  tempov1alpha1.TempoFullNodeController,
 		kube.NameLabel:       appName(crd),
 		kube.VersionLabel:    kube.ParseImageVersion(crd.Spec.PodTemplate.Image),
-		networkLabel:         crd.Spec.ChainSpec.Network,
-		typeLabel:            string(nodeType),
+		chainLabel:           crd.Spec.ChainSpec.Chain,
+		roleLabel:            string(crd.Spec.Role),
 	}
 	for k, v := range crd.Labels {
 		labels[k] = v
@@ -39,11 +35,11 @@ func defaultLabels(crd *cosmosv1.CosmosFullNode, kvPairs ...string) map[string]s
 	return labels
 }
 
-func appName(crd *cosmosv1.CosmosFullNode) string {
+func appName(crd *tempov1alpha1.TempoFullNode) string {
 	return kube.ToName(crd.Name)
 }
 
-func instanceName(crd *cosmosv1.CosmosFullNode, ordinal int32) string {
+func instanceName(crd *tempov1alpha1.TempoFullNode, ordinal int32) string {
 	return kube.ToName(fmt.Sprintf("%s-%d", appName(crd), ordinal))
 }
 

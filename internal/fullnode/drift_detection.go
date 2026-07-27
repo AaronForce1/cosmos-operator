@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	cosmosv1 "github.com/aaronforce1/cosmos-operator/api/v1"
-	"github.com/aaronforce1/cosmos-operator/internal/cosmos"
+	tempov1alpha1 "github.com/aaronforce1/cosmos-operator/api/v1alpha1"
 	"github.com/aaronforce1/cosmos-operator/internal/kube"
+	"github.com/aaronforce1/cosmos-operator/internal/tempo"
 	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -29,16 +29,26 @@ func NewDriftDetection(collector StatusCollector) DriftDetection {
 }
 
 // LaggingPods returns pods that are lagging behind the latest block height.
-func (d DriftDetection) LaggingPods(ctx context.Context, crd *cosmosv1.CosmosFullNode) []*corev1.Pod {
-	synced := d.collector.Collect(ctx, client.ObjectKeyFromObject(crd)).Synced()
+//
+// Validator CRDs never yield lagging pods: automated deletion of a signer is a double-sign
+// hazard, so a lagging validator is surfaced by the caller as an event instead.
+func (d DriftDetection) LaggingPods(ctx context.Context, crd *tempov1alpha1.TempoFullNode) []*corev1.Pod {
+	if crd.IsValidator() {
+		return nil
+	}
 
-	maxHeight := lo.MaxBy(synced, func(a cosmos.StatusItem, b cosmos.StatusItem) bool {
-		return a.Status.LatestBlockHeight() > b.Status.LatestBlockHeight()
-	}).Status.LatestBlockHeight()
+	synced := d.collector.Collect(ctx, client.ObjectKeyFromObject(crd)).Synced()
+	if len(synced) == 0 {
+		return nil
+	}
+
+	maxHeight := lo.MaxBy(synced, func(a tempo.StatusItem, b tempo.StatusItem) bool {
+		return a.Status.Height > b.Status.Height
+	}).Status.Height
 
 	thresh := uint64(crd.Spec.SelfHeal.HeightDriftMitigation.Threshold)
-	lagging := lo.FilterMap(synced, func(item cosmos.StatusItem, _ int) (*corev1.Pod, bool) {
-		isLagging := maxHeight-item.Status.LatestBlockHeight() >= thresh
+	lagging := lo.FilterMap(synced, func(item tempo.StatusItem, _ int) (*corev1.Pod, bool) {
+		isLagging := maxHeight-item.Status.Height >= thresh
 		return item.GetPod(), isLagging
 	})
 

@@ -1,4 +1,4 @@
-package cosmos
+package tempo
 
 import (
 	"errors"
@@ -11,10 +11,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// StatusItem is a pod paired with its CometBFT status.
+// StatusItem is a pod paired with its Tempo node status.
 type StatusItem struct {
 	Pod    *corev1.Pod
-	Status CometStatus
+	Status NodeStatus
 	TS     time.Time
 	Err    error
 }
@@ -24,15 +24,15 @@ func (status StatusItem) GetPod() *corev1.Pod {
 	return status.Pod
 }
 
-// GetStatus returns the CometBFT status or an error if the status could not be fetched.
-func (status StatusItem) GetStatus() (CometStatus, error) {
+// GetStatus returns the node status or an error if the status could not be fetched.
+func (status StatusItem) GetStatus() (NodeStatus, error) {
 	return status.Status, status.Err
 }
 
-// Timestamp returns the time when the CometBFT status was fetched.
+// Timestamp returns the time when the node status was fetched.
 func (status StatusItem) Timestamp() time.Time { return status.TS }
 
-// StatusCollection is a list of pods and CometBFT status associated with the pod.
+// StatusCollection is a list of pods and the node status associated with the pod.
 type StatusCollection []StatusItem
 
 // Len returns the number of items in the collection. Part of the sort.Interface implementation.
@@ -94,14 +94,15 @@ func (coll StatusCollection) Pods() []*corev1.Pod {
 	return lo.Map(coll, func(status StatusItem, _ int) *corev1.Pod { return status.GetPod() })
 }
 
-// Synced returns all items that are caught up with the chain tip.
+// Synced returns all items that are caught up with the chain tip: reachable, not syncing, and
+// with a recent latest block (judged as of the time the status was fetched).
 func (coll StatusCollection) Synced() StatusCollection {
 	var items []StatusItem
 	for _, status := range coll {
 		if status.Err != nil {
 			continue
 		}
-		if status.Status.Result.SyncInfo.CatchingUp {
+		if !status.Status.CaughtUp(status.TS) {
 			continue
 		}
 		items = append(items, status)

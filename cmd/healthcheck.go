@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/aaronforce1/cosmos-operator/internal/cosmos"
 	"github.com/aaronforce1/cosmos-operator/internal/healthcheck"
+	"github.com/aaronforce1/cosmos-operator/internal/tempo"
 	"github.com/go-logr/zapr"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -22,7 +22,7 @@ func HealthCheckCmd() *cobra.Command {
 		SilenceUsage: true,
 	}
 
-	hc.Flags().String("rpc-host", "http://localhost:26657", "CometBFT rpc endpoint")
+	hc.Flags().String("rpc-host", "http://localhost:8545", "Tempo JSON-RPC endpoint")
 	hc.Flags().String("log-format", "console", "'console' or 'json'")
 	hc.Flags().Duration("timeout", 5*time.Second, "how long to wait before timing out requests to rpc-host")
 	hc.Flags().String("addr", fmt.Sprintf(":%d", healthcheck.Port), "listen address for server to bind")
@@ -40,8 +40,8 @@ func startHealthCheckServer(cmd *cobra.Command, args []string) error {
 		rpcHost    = viper.GetString("rpc-host")
 		timeout    = viper.GetDuration("timeout")
 
-		httpClient  = &http.Client{Timeout: 30 * time.Second}
-		cometClient = cosmos.NewCometClient(httpClient)
+		httpClient = &http.Client{Timeout: 30 * time.Second}
+		nodeClient = tempo.NewClient(httpClient)
 
 		zlog   = ZapLogger("info", viper.GetString("log-format"))
 		logger = zapr.NewLogger(zlog)
@@ -49,7 +49,7 @@ func startHealthCheckServer(cmd *cobra.Command, args []string) error {
 	defer func() { _ = zlog.Sync() }()
 
 	mux := http.NewServeMux()
-	mux.Handle("/", healthcheck.NewComet(logger, cometClient, rpcHost, timeout))
+	mux.Handle("/", healthcheck.NewNode(logger, nodeClient, rpcHost, timeout))
 	mux.HandleFunc("/disk", healthcheck.DiskUsage)
 
 	srv := &http.Server{

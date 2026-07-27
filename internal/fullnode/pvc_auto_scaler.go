@@ -6,7 +6,7 @@ import (
 	"math"
 	"time"
 
-	cosmosv1 "github.com/aaronforce1/cosmos-operator/api/v1"
+	tempov1alpha1 "github.com/aaronforce1/cosmos-operator/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -14,7 +14,7 @@ import (
 )
 
 type StatusSyncer interface {
-	SyncUpdate(ctx context.Context, key client.ObjectKey, update func(status *cosmosv1.FullNodeStatus)) error
+	SyncUpdate(ctx context.Context, key client.ObjectKey, update func(status *tempov1alpha1.TempoFullNodeStatus)) error
 }
 
 type PVCAutoScaler struct {
@@ -41,7 +41,7 @@ func NewPVCAutoScaler(client StatusSyncer) *PVCAutoScaler {
 // 3. The maximum size has been reached. It will patch up to the maximum size.
 //
 // Returns an error if patching unsuccessful.
-func (scaler PVCAutoScaler) SignalPVCResize(ctx context.Context, crd *cosmosv1.CosmosFullNode, results []PVCDiskUsage) (bool, error) {
+func (scaler PVCAutoScaler) SignalPVCResize(ctx context.Context, crd *tempov1alpha1.TempoFullNode, results []PVCDiskUsage) (bool, error) {
 	var (
 		spec    = crd.Spec.SelfHeal.PVCAutoScale
 		trigger = int(spec.UsedSpacePercentage)
@@ -51,7 +51,7 @@ func (scaler PVCAutoScaler) SignalPVCResize(ctx context.Context, crd *cosmosv1.C
 
 	status := crd.Status.SelfHealing.PVCAutoScale
 
-	patches := make(map[string]*cosmosv1.PVCAutoScaleStatus)
+	patches := make(map[string]*tempov1alpha1.PVCAutoScaleStatus)
 
 	now := metav1.NewTime(scaler.now())
 
@@ -86,7 +86,7 @@ func (scaler PVCAutoScaler) SignalPVCResize(ctx context.Context, crd *cosmosv1.C
 			}
 		}
 
-		patches[pvc.Name] = &cosmosv1.PVCAutoScaleStatus{
+		patches[pvc.Name] = &tempov1alpha1.PVCAutoScaleStatus{
 			RequestedSize: newSize,
 			RequestedAt:   now,
 		}
@@ -96,7 +96,7 @@ func (scaler PVCAutoScaler) SignalPVCResize(ctx context.Context, crd *cosmosv1.C
 		return false, joinedErr
 	}
 
-	return true, errors.Join(joinedErr, scaler.client.SyncUpdate(ctx, client.ObjectKeyFromObject(crd), func(status *cosmosv1.FullNodeStatus) {
+	return true, errors.Join(joinedErr, scaler.client.SyncUpdate(ctx, client.ObjectKeyFromObject(crd), func(status *tempov1alpha1.TempoFullNodeStatus) {
 		if status.SelfHealing.PVCAutoScale == nil {
 			status.SelfHealing.PVCAutoScale = patches
 			return

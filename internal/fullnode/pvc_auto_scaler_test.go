@@ -7,16 +7,16 @@ import (
 	"testing"
 	"time"
 
-	cosmosv1 "github.com/aaronforce1/cosmos-operator/api/v1"
+	tempov1alpha1 "github.com/aaronforce1/cosmos-operator/api/v1alpha1"
 	"github.com/samber/lo"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-type mockStatusSyncer func(ctx context.Context, key client.ObjectKey, update func(status *cosmosv1.FullNodeStatus)) error
+type mockStatusSyncer func(ctx context.Context, key client.ObjectKey, update func(status *tempov1alpha1.TempoFullNodeStatus)) error
 
-func (fn mockStatusSyncer) SyncUpdate(ctx context.Context, key client.ObjectKey, update func(status *cosmosv1.FullNodeStatus)) error {
+func (fn mockStatusSyncer) SyncUpdate(ctx context.Context, key client.ObjectKey, update func(status *tempov1alpha1.TempoFullNodeStatus)) error {
 	if ctx == nil {
 		panic("nil context")
 	}
@@ -29,7 +29,7 @@ func TestPVCAutoScaler_SignalPVCResize(t *testing.T) {
 
 	ctx := context.Background()
 
-	panicSyncer := mockStatusSyncer(func(ctx context.Context, key client.ObjectKey, update func(status *cosmosv1.FullNodeStatus)) error {
+	panicSyncer := mockStatusSyncer(func(ctx context.Context, key client.ObjectKey, update func(status *tempov1alpha1.TempoFullNodeStatus)) error {
 		panic("should not be called")
 	})
 
@@ -57,12 +57,12 @@ func TestPVCAutoScaler_SignalPVCResize(t *testing.T) {
 			// Weird user input cases
 			{"1", zeroQuant, *resource.NewQuantity(capacity.Value()+1, resource.BinarySI)},
 		} {
-			var crd cosmosv1.CosmosFullNode
+			var crd tempov1alpha1.TempoFullNode
 			crd.APIVersion = "v1"
 			crd.Name = name
 			crd.Namespace = namespace
-			crd.Spec.SelfHeal = &cosmosv1.SelfHealSpec{
-				PVCAutoScale: &cosmosv1.PVCAutoScaleSpec{
+			crd.Spec.SelfHeal = &tempov1alpha1.SelfHealSpec{
+				PVCAutoScale: &tempov1alpha1.PVCAutoScaleSpec{
 					UsedSpacePercentage: usedSpacePercentage,
 					IncreaseQuantity:    tt.Increase,
 					MaxSize:             tt.Max,
@@ -70,11 +70,11 @@ func TestPVCAutoScaler_SignalPVCResize(t *testing.T) {
 			}
 
 			var patchCalled bool
-			syncer := mockStatusSyncer(func(ctx context.Context, key client.ObjectKey, update func(status *cosmosv1.FullNodeStatus)) error {
+			syncer := mockStatusSyncer(func(ctx context.Context, key client.ObjectKey, update func(status *tempov1alpha1.TempoFullNodeStatus)) error {
 				require.Equal(t, name, key.Name)
 				require.Equal(t, namespace, key.Namespace)
 
-				var got cosmosv1.FullNodeStatus
+				var got tempov1alpha1.TempoFullNodeStatus
 				update(&got)
 				gotStatus := got.SelfHealing.PVCAutoScale
 				require.Equal(t, stubNow, gotStatus["pvc-"+name+"-0"].RequestedAt.Time, tt)
@@ -110,11 +110,11 @@ func TestPVCAutoScaler_SignalPVCResize(t *testing.T) {
 		)
 		const usedSpacePercentage = 80
 
-		var crd cosmosv1.CosmosFullNode
+		var crd tempov1alpha1.TempoFullNode
 		name := "name"
 		crd.Name = name
-		crd.Spec.SelfHeal = &cosmosv1.SelfHealSpec{
-			PVCAutoScale: &cosmosv1.PVCAutoScaleSpec{
+		crd.Spec.SelfHeal = &tempov1alpha1.SelfHealSpec{
+			PVCAutoScale: &tempov1alpha1.PVCAutoScaleSpec{
 				UsedSpacePercentage: usedSpacePercentage,
 				IncreaseQuantity:    "300%",
 				MaxSize:             maxSize,
@@ -122,8 +122,8 @@ func TestPVCAutoScaler_SignalPVCResize(t *testing.T) {
 		}
 
 		var patchCalled bool
-		syncer := mockStatusSyncer(func(ctx context.Context, key client.ObjectKey, update func(status *cosmosv1.FullNodeStatus)) error {
-			var got cosmosv1.FullNodeStatus
+		syncer := mockStatusSyncer(func(ctx context.Context, key client.ObjectKey, update func(status *tempov1alpha1.TempoFullNodeStatus)) error {
+			var got tempov1alpha1.TempoFullNodeStatus
 			update(&got)
 			gotStatus := got.SelfHealing.PVCAutoScale
 			require.Equal(t, maxSize.Value(), gotStatus["pvc-"+name+"-0"].RequestedSize.Value())
@@ -153,11 +153,11 @@ func TestPVCAutoScaler_SignalPVCResize(t *testing.T) {
 		} {
 			const usedSpacePercentage = 60
 
-			var crd cosmosv1.CosmosFullNode
+			var crd tempov1alpha1.TempoFullNode
 			name := "name"
 			crd.Name = name
-			crd.Spec.SelfHeal = &cosmosv1.SelfHealSpec{
-				PVCAutoScale: &cosmosv1.PVCAutoScaleSpec{
+			crd.Spec.SelfHeal = &tempov1alpha1.SelfHealSpec{
+				PVCAutoScale: &tempov1alpha1.PVCAutoScaleSpec{
 					UsedSpacePercentage: usedSpacePercentage,
 					IncreaseQuantity:    "10Gi",
 					MaxSize:             tt.Max,
@@ -186,9 +186,9 @@ func TestPVCAutoScaler_SignalPVCResize(t *testing.T) {
 				{PercentUsed: 10},
 			}},
 		} {
-			var crd cosmosv1.CosmosFullNode
-			crd.Spec.SelfHeal = &cosmosv1.SelfHealSpec{
-				PVCAutoScale: &cosmosv1.PVCAutoScaleSpec{
+			var crd tempov1alpha1.TempoFullNode
+			crd.Spec.SelfHeal = &tempov1alpha1.SelfHealSpec{
+				PVCAutoScale: &tempov1alpha1.PVCAutoScaleSpec{
 					UsedSpacePercentage: 80,
 					IncreaseQuantity:    "10Gi",
 				},
@@ -205,16 +205,16 @@ func TestPVCAutoScaler_SignalPVCResize(t *testing.T) {
 	t.Run("patch already signaled", func(t *testing.T) {
 		const usedSpacePercentage = 90
 
-		var crd cosmosv1.CosmosFullNode
+		var crd tempov1alpha1.TempoFullNode
 		name := "name"
 		crd.Name = name
-		crd.Spec.SelfHeal = &cosmosv1.SelfHealSpec{
-			PVCAutoScale: &cosmosv1.PVCAutoScaleSpec{
+		crd.Spec.SelfHeal = &tempov1alpha1.SelfHealSpec{
+			PVCAutoScale: &tempov1alpha1.PVCAutoScaleSpec{
 				UsedSpacePercentage: usedSpacePercentage,
 				IncreaseQuantity:    "10Gi",
 			},
 		}
-		crd.Status.SelfHealing.PVCAutoScale = map[string]*cosmosv1.PVCAutoScaleStatus{
+		crd.Status.SelfHealing.PVCAutoScale = map[string]*tempov1alpha1.PVCAutoScaleStatus{
 			"pvc-" + name + "-0": {
 				RequestedSize: resource.MustParse("100Gi"),
 			},
@@ -239,11 +239,11 @@ func TestPVCAutoScaler_SignalPVCResize(t *testing.T) {
 			{""}, // CRD validation should prevent this
 			{"wut"},
 		} {
-			var crd cosmosv1.CosmosFullNode
+			var crd tempov1alpha1.TempoFullNode
 			name := "name"
 			crd.Name = name
-			crd.Spec.SelfHeal = &cosmosv1.SelfHealSpec{
-				PVCAutoScale: &cosmosv1.PVCAutoScaleSpec{
+			crd.Spec.SelfHeal = &tempov1alpha1.SelfHealSpec{
+				PVCAutoScale: &tempov1alpha1.PVCAutoScaleSpec{
 					UsedSpacePercentage: usedSpacePercentage,
 					IncreaseQuantity:    tt.Increase,
 				},
@@ -263,15 +263,15 @@ func TestPVCAutoScaler_SignalPVCResize(t *testing.T) {
 	t.Run("patch error", func(t *testing.T) {
 		const usedSpacePercentage = 50
 
-		var crd cosmosv1.CosmosFullNode
-		crd.Spec.SelfHeal = &cosmosv1.SelfHealSpec{
-			PVCAutoScale: &cosmosv1.PVCAutoScaleSpec{
+		var crd tempov1alpha1.TempoFullNode
+		crd.Spec.SelfHeal = &tempov1alpha1.SelfHealSpec{
+			PVCAutoScale: &tempov1alpha1.PVCAutoScaleSpec{
 				UsedSpacePercentage: usedSpacePercentage,
 				IncreaseQuantity:    "10%",
 			},
 		}
 
-		scaler := NewPVCAutoScaler(mockStatusSyncer(func(ctx context.Context, key client.ObjectKey, update func(status *cosmosv1.FullNodeStatus)) error {
+		scaler := NewPVCAutoScaler(mockStatusSyncer(func(ctx context.Context, key client.ObjectKey, update func(status *tempov1alpha1.TempoFullNodeStatus)) error {
 			return errors.New("boom")
 		}))
 		usage := []PVCDiskUsage{

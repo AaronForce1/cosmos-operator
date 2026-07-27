@@ -18,8 +18,6 @@ const (
 
 	// OrdinalAnnotation is used to order resources. The value must be a base 10 integer string.
 	OrdinalAnnotation = "app.kubernetes.io/ordinal"
-
-	BelongsToLabel = "cosmos.strange.love/belongs-to"
 )
 
 // Fields.

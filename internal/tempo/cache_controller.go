@@ -1,4 +1,4 @@
-package cosmos
+package tempo
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	cosmosv1 "github.com/aaronforce1/cosmos-operator/api/v1"
+	tempov1alpha1 "github.com/aaronforce1/cosmos-operator/api/v1alpha1"
 	"github.com/aaronforce1/cosmos-operator/internal/kube"
 	"golang.org/x/sync/errgroup"
 	corev1 "k8s.io/api/core/v1"
@@ -84,10 +84,10 @@ type Collector interface {
 	Collect(ctx context.Context, pods []corev1.Pod) StatusCollection
 }
 
-const CacheControllerName = "CosmosCache"
+const CacheControllerName = "TempoCache"
 
-// CacheController periodically polls pods for their CometBFT status and caches the result.
-// The cache is a controller so it can watch CosmosFullNode objects to warm or invalidate the cache.
+// CacheController periodically polls pods for their Tempo node status and caches the result.
+// The cache is a controller so it can watch TempoFullNode objects to warm or invalidate the cache.
 type CacheController struct {
 	cache     *cache
 	client    client.Reader
@@ -107,12 +107,12 @@ func NewCacheController(collector Collector, reader client.Reader, recorder reco
 	}
 }
 
-// SetupWithManager watches CosmosFullNode objects and starts cache collecting.
+// SetupWithManager watches TempoFullNode objects and starts cache collecting.
 func (c *CacheController) SetupWithManager(_ context.Context, mgr ctrl.Manager) error {
 	// We do not index pods because we presume another controller is already doing so.
 	// If we repeat it here, the manager returns an error.
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&cosmosv1.CosmosFullNode{}).
+		For(&tempov1alpha1.TempoFullNode{}).
 		Complete(c)
 }
 
@@ -125,7 +125,7 @@ func (c *CacheController) Close() error {
 var finishResult reconcile.Result
 
 func (c *CacheController) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
-	crd := new(cosmosv1.CosmosFullNode)
+	crd := new(tempov1alpha1.TempoFullNode)
 	if err := c.client.Get(ctx, req.NamespacedName, crd); err != nil {
 		if kube.IsNotFound(err) {
 			c.cache.Del(req.NamespacedName)
@@ -156,7 +156,7 @@ func (c *CacheController) Invalidate(controller client.ObjectKey, pods []string)
 	for _, s := range v {
 		for _, pod := range pods {
 			if s.Pod.Name == pod {
-				s.Status = CometStatus{}
+				s.Status = NodeStatus{}
 				s.Err = fmt.Errorf("invalidated")
 				s.TS = now
 			}
@@ -165,7 +165,7 @@ func (c *CacheController) Invalidate(controller client.ObjectKey, pods []string)
 	c.cache.Update(controller, v)
 }
 
-// Collect returns a StatusCollection for the given controller. Only returns cached CometStatus.
+// Collect returns a StatusCollection for the given controller. Only returns cached NodeStatus.
 func (c *CacheController) Collect(ctx context.Context, controller client.ObjectKey) StatusCollection {
 	pods, err := c.listPods(ctx, controller)
 	if err != nil {
