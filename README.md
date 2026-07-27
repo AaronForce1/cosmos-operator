@@ -47,31 +47,63 @@ Requires a cluster with node-local SSD ephemeral storage for the execution datad
 [docs/storage.md](docs/storage.md) first; on GKE that means Standard node pools with
 `--ephemeral-storage-local-ssd`.
 
-```sh
-# Install the CRD and deploy the operator
-make deploy IMG=ghcr.io/aaronforce1/tempo-operator:<version>
+Install with Helm (installs the CRD and the operator):
 
-# Deploy two RPC nodes on mainnet
+```sh
+helm install tempo-operator ./charts/tempo-operator \
+  --namespace tempo-operator-system --create-namespace
+```
+
+(or with kustomize: `make deploy IMG=ghcr.io/aaronforce1/tempo-operator:<version>`)
+
+Then deploy nodes:
+
+```sh
+# Two RPC nodes on mainnet
 kubectl apply -f config/samples/tempo_v1alpha1_tempofullnode.yaml
 ```
 
 Sample manifests:
 
 - [`tempo_v1alpha1_tempofullnode.yaml`](config/samples/tempo_v1alpha1_tempofullnode.yaml) — minimal RPC nodes
+- [`tempo_v1alpha1_tempofullnode_testnet.yaml`](config/samples/tempo_v1alpha1_tempofullnode_testnet.yaml) — dev-sized node syncing the moderato testnet, with snapshot-source overrides shown
 - [`tempo_v1alpha1_tempofullnode_validator.yaml`](config/samples/tempo_v1alpha1_tempofullnode_validator.yaml) — validator with key prerequisites
 - [`tempo_v1alpha1_tempofullnode_full.yaml`](config/samples/tempo_v1alpha1_tempofullnode_full.yaml) — every field, commented
 
 Any flag the CRD does not model can be passed verbatim via `spec.chain.additionalArgs`
 (and `spec.chain.additionalDownloadArgs` for `tempo download`).
 
+### Snapshot bootstrap
+
+Every node restores from a snapshot before starting (unless `spec.snapshotInit.policy: Never`):
+an init container runs `tempo download` against the exec datadir, idempotently, choosing the
+snapshot flavor from the role (`minimal`/`full`/`archive`). To pull from your own snapshot
+source instead of the chain default, set `spec.snapshotInit.url` and/or
+`spec.snapshotInit.manifestURL` — they map to `tempo download --url/--manifest-url`.
+
+## Local development (devcontainer + kind)
+
+Open the repo in a devcontainer (VS Code "Reopen in Container" or GitHub Codespaces); it brings
+Go, docker-in-docker, kind, kubectl, and helm. Then:
+
+```sh
+make dev-up        # kind cluster + locally-built operator image + helm install (CRD + operator)
+make dev-sample    # TempoFullNode syncing against the moderato testnet
+kubectl get tempofullnodes -w
+make dev-down      # tear down
+```
+
+`make dev-up` is idempotent — re-run it after code changes to rebuild and roll the operator.
+
 ## Development
 
 ```sh
-make manifests generate   # controller-gen: CRDs + deepcopy
+make manifests generate   # controller-gen: CRDs + deepcopy (also syncs the Helm chart's crds/)
 make test                 # unit tests (-short)
-make test-envtest         # controller tests against a real kube-apiserver
+make test-envtest         # controller tests against a real kube-apiserver (validates samples too)
 make test-e2e-kind        # kind smoke test syncing against the moderato testnet
 make lint                 # golangci-lint
+make helm-lint            # lint + render the Helm chart
 ```
 
 Layout:

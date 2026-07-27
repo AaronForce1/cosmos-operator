@@ -19,3 +19,6 @@ jobs:
 
       - name: Ensure no changes
         run: git diff --exit-code
+
+      - name: Helm lint
+        run: helm lint charts/tempo-operator && helm template smoke charts/tempo-operator > /dev/null

@@ -1,0 +1,52 @@
+# Default values for tempo-operator.
+
+image:
+  repository: ghcr.io/aaronforce1/tempo-operator
+  # If empty, defaults to the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+replicaCount: 1
+
+# Leader election is required whenever replicaCount > 1 and safe to leave on at 1.
+leaderElection: true
+
+# Operator logging: level one of error|info|debug, format one of console|json.
+logLevel: info
+logFormat: console
+
+serviceAccount:
+  create: true
+  annotations: {}
+  # Name of the service account to use. If not set and create is true, a name is generated.
+  name: ""
+
+rbac:
+  # Create the ClusterRole/ClusterRoleBinding and leader-election Role/RoleBinding.
+  create: true
+
+# Expose the controller-runtime metrics endpoint as a Service (scrape target).
+metricsService:
+  enabled: false
+  port: 8080
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""

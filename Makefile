@@ -43,6 +43,7 @@ help: ## Display this help.
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 	go run tools/minify-crd.go -v -o config/crd/bases/tempo.aaronforce.io_tempofullnodes.yaml
+	cp config/crd/bases/tempo.aaronforce.io_tempofullnodes.yaml charts/tempo-operator/crds/
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
@@ -87,6 +88,26 @@ test-e2e: ## Run e2e tests against the cluster in KUBECONFIG (CRD + operator mus
 .PHONY: test-e2e-kind
 test-e2e-kind: ## Create a kind cluster, run the operator locally, and execute the e2e suite.
 	./test/e2e/kind.sh
+
+##@ Local Development (kind)
+
+.PHONY: dev-up
+dev-up: ## Create a kind cluster, build the operator image, and helm-install CRD + operator.
+	./hack/dev-up.sh
+
+.PHONY: dev-sample
+dev-sample: ## Deploy a TempoFullNode syncing against the moderato testnet.
+	kubectl apply -f config/samples/tempo_v1alpha1_tempofullnode_testnet.yaml
+	@echo "Watch with: kubectl get tempofullnodes -w ; kubectl get pods -w"
+
+.PHONY: dev-down
+dev-down: ## Delete the local development kind cluster.
+	./hack/dev-down.sh
+
+.PHONY: helm-lint
+helm-lint: ## Lint and render the Helm chart.
+	helm lint charts/tempo-operator
+	helm template smoke charts/tempo-operator > /dev/null
 
 .PHONY: tools
 tools: ## Install dev tools.

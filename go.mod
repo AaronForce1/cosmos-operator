@@ -3,11 +3,9 @@ module github.com/aaronforce1/cosmos-operator
 go 1.23.2
 
 require (
-	github.com/BurntSushi/toml v1.3.2
 	github.com/go-logr/logr v1.4.2
 	github.com/go-logr/zapr v1.3.0
 	github.com/kubernetes-csi/external-snapshotter/client/v6 v6.1.0
-	github.com/peterbourgon/mergemap v0.0.1
 	github.com/pkg/profile v1.7.0
 	github.com/samber/lo v1.47.0
 	github.com/spf13/cobra v1.8.1
@@ -23,6 +21,7 @@ require (
 	k8s.io/apimachinery v0.25.5
 	k8s.io/client-go v0.25.5
 	sigs.k8s.io/controller-runtime v0.13.1
+	sigs.k8s.io/yaml v1.4.0
 )
 
 require (
@@ -101,5 +100,4 @@ require (
 	k8s.io/utils v0.0.0-20220728103510-ee6ede2d64ed // indirect
 	sigs.k8s.io/json v0.0.0-20220713155537-f223a00ba0e2 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.2.3 // indirect
-	sigs.k8s.io/yaml v1.4.0 // indirect
 )

@@ -1,0 +1,31 @@
+{
+  "name": "tempo-operator",
+  "image": "mcr.microsoft.com/devcontainers/go:1-1.24-bookworm",
+  "features": {
+    // Docker daemon inside the container; required by kind.
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    // kubectl + helm (minikube disabled; we use kind).
+    "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {
+      "minikube": "none"
+    }
+  },
+  "postCreateCommand": ".devcontainer/post-create.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "ms-kubernetes-tools.vscode-kubernetes-tools",
+        "redhat.vscode-yaml"
+      ]
+    }
+  },
+  "remoteEnv": {
+    "KIND_CLUSTER_NAME": "tempo-operator-dev"
+  },
+  // kind + operator + a syncing node want some headroom.
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "8gb",
+    "storage": "64gb"
+  }
+}

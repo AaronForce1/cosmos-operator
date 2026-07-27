@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/yaml"
 )
 
 // TestTempoFullNodeEnvtest runs the TempoFullNode controller against a real kube-apiserver via
@@ -287,6 +288,25 @@ func TestTempoFullNodeEnvtest(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "immutable")
 		require.NoError(t, k8sClient.Delete(ctx, ok))
+	})
+
+	t.Run("sample manifests apply cleanly", func(t *testing.T) {
+		samples, err := filepath.Glob(filepath.Join("..", "config", "samples", "*.yaml"))
+		require.NoError(t, err)
+		require.NotEmpty(t, samples)
+
+		for _, path := range samples {
+			raw, err := os.ReadFile(path)
+			require.NoError(t, err, path)
+
+			var sample tempov1alpha1.TempoFullNode
+			require.NoError(t, yaml.UnmarshalStrict(raw, &sample), "sample %s does not strictly match the TempoFullNode schema", path)
+			sample.Namespace = namespace
+
+			// Server-side validation: OpenAPI schema + CEL rules must accept every shipped sample.
+			require.NoError(t, k8sClient.Create(ctx, &sample), "apply sample %s", path)
+			require.NoError(t, k8sClient.Delete(ctx, &sample))
+		}
 	})
 
 	t.Run("delete", func(t *testing.T) {
