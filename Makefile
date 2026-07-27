@@ -42,7 +42,7 @@ help: ## Display this help.
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
-	go run tools/minify-crd.go -v -o config/crd/bases/cosmos.strange.love_cosmosfullnodes.yaml
+	go run tools/minify-crd.go -v -o config/crd/bases/tempo.aaronforce.io_tempofullnodes.yaml
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
@@ -54,7 +54,7 @@ gen-api: ## Generate new API resource. VERSION defaults to "v1". E.g. make gen-a
 ifndef KIND
 	$(error KIND is not defined; e.g. KIND="CosmosMyNewResource")
 endif
-	@kubebuilder create api --group cosmos --kind $(KIND) --version $(VERSION)
+	@kubebuilder create api --group tempo --kind $(KIND) --version $(VERSION)
 
 .PHONY: test
 test: manifests generate ## Run unit tests.
@@ -83,7 +83,7 @@ build: generate ## Build manager binary.
 run: manifests generate ## Run a controller from your host.
 	go run . --log-level=debug
 
-PRE_IMG ?= ghcr.io/strangelove-ventures/cosmos-operator:dev$(shell git describe --always --dirty)
+PRE_IMG ?= ghcr.io/aaronforce1/tempo-operator:dev$(shell git describe --always --dirty)
 .PHONY: docker-prerelease
 docker-prerelease: ## Build and push a prerelease docker image.
 	IMG=$(PRE_IMG) $(MAKE) docker-build docker-push
@@ -116,7 +116,7 @@ deploy-prerelease: install docker-prerelease ## Install CRDs, build docker image
 	cd config/manager && $(KUSTOMIZE) edit set image controller=$(PRE_IMG)
 	$(KUSTOMIZE) build config/default | kubectl apply -f -
 	@#Hack to reset tag to avoid git thrashing.
-	@cd config/manager && $(KUSTOMIZE) edit set image controller=ghcr.io/strangelove-ventures/cosmos-operator:latest
+	@cd config/manager && $(KUSTOMIZE) edit set image controller=ghcr.io/aaronforce1/tempo-operator:latest
 
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.

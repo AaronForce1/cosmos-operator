@@ -7,10 +7,16 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - configmaps
+  - events
+  verbs:
+  - create
+  - patch
+  - update
+- apiGroups:
+  - ""
+  resources:
   - persistentvolumeclaims
   - pods
-  - serviceaccounts
   - services
   verbs:
   - create
@@ -21,28 +27,9 @@ rules:
   - update
   - watch
 - apiGroups:
-  - ""
+  - tempo.aaronforce.io
   resources:
-  - events
-  verbs:
-  - create
-  - patch
-  - update
-- apiGroups:
-  - batch
-  resources:
-  - jobs
-  verbs:
-  - create
-  - get
-  - list
-  - watch
-- apiGroups:
-  - cosmos.strange.love
-  resources:
-  - cosmosfullnodes
-  - scheduledvolumesnapshots
-  - statefuljobs
+  - tempofullnodes
   verbs:
   - create
   - delete
@@ -52,45 +39,16 @@ rules:
   - update
   - watch
 - apiGroups:
-  - cosmos.strange.love
+  - tempo.aaronforce.io
   resources:
-  - cosmosfullnodes/finalizers
-  - scheduledvolumesnapshots/finalizers
-  - statefuljobs/finalizers
+  - tempofullnodes/finalizers
   verbs:
   - update
 - apiGroups:
-  - cosmos.strange.love
+  - tempo.aaronforce.io
   resources:
-  - cosmosfullnodes/status
-  - scheduledvolumesnapshots/status
-  - statefuljobs/status
+  - tempofullnodes/status
   verbs:
   - get
   - patch
   - update
-- apiGroups:
-  - rbac.authorization.k8s.io
-  resources:
-  - rolebindings
-  - roles
-  verbs:
-  - bind
-  - create
-  - delete
-  - escalate
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - snapshot.storage.k8s.io
-  resources:
-  - volumesnapshots
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - watch

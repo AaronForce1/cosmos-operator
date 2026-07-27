@@ -1,0 +1,27 @@
+# Minimal RPC node deployment on Tempo mainnet.
+apiVersion: tempo.aaronforce.io/v1alpha1
+kind: TempoFullNode
+metadata:
+  name: tempo-rpc
+spec:
+  role: rpc
+  replicas: 2
+  chain:
+    chain: mainnet
+  podTemplate:
+    image: ghcr.io/tempoxyz/tempo:v1.11.0
+    resources:
+      requests:
+        cpu: "16"
+        memory: 32Gi
+        # The exec datadir draws from node ephemeral storage; the node pool must provide
+        # local-SSD-backed ephemeral storage (see docs/storage.md).
+        ephemeral-storage: 1500Gi
+  execVolume:
+    emptyDir:
+      sizeLimit: 1500Gi
+  consensusVolume:
+    storageClassName: standard-rwo
+    resources:
+      requests:
+        storage: 20Gi

@@ -1,0 +1,164 @@
+# Reference for (almost) all TempoFullNode fields with commentary.
+# This file is documentation; do not apply it verbatim.
+apiVersion: tempo.aaronforce.io/v1alpha1
+kind: TempoFullNode
+metadata:
+  name: tempo-full-reference
+spec:
+  # validator | rpc | archive.
+  # validator: signs blocks; requires signingKey; replicas <= 1; double-sign guards active.
+  # rpc: follower serving JSON-RPC (`tempo node --follow`); snapshot profile defaults to "full".
+  # archive: follower retaining full history; snapshot profile defaults to "archive".
+  role: rpc
+
+  # Number of pods. Each gets a stable ordinal identity, its own consensus PVC and p2p service.
+  replicas: 2
+
+  # Optional starting ordinal (default 0).
+  ordinals:
+    start: 0
+
+  chain:
+    # Passed as --chain to `tempo node` and `tempo download`. Known public values:
+    # mainnet, moderato. Free-form so Tempo forks can pass their own names/paths.
+    chain: moderato
+    # Escape hatch: appended verbatim to `tempo node`. Use for flags not modeled by the CRD.
+    additionalArgs: []
+    # Appended verbatim to `tempo download` in the snapshot init container.
+    additionalDownloadArgs: []
+    # Extra env vars on the node container, e.g. Rust log filtering.
+    env:
+      - name: RUST_LOG
+        value: info
+    # Override the role-derived default for --follow (validator=false, rpc/archive=true).
+    # follow: true
+
+  podTemplate:
+    metadata:
+      labels: {}
+      annotations: {}
+    # Image for the node container and the snapshot init container.
+    # Superseded while a scheduledUpgrades entry is active.
+    image: ghcr.io/tempoxyz/tempo:v1.11.0
+    imagePullPolicy: IfNotPresent
+    # Pin pods onto node pools that satisfy the local-NVMe requirement for the exec datadir.
+    nodeSelector: {}
+    tolerations: []
+    priorityClassName: ""
+    resources:
+      requests:
+        cpu: "16"
+        memory: 32Gi
+        ephemeral-storage: 1500Gi
+    terminationGracePeriodSeconds: 30
+    probes:
+      # None | Reachable | InSync (default InSync).
+      # InSync gates readiness on the healthcheck sidecar (eth_syncing false + recent block).
+      strategy: InSync
+    # Strategic-merge escape hatches. Use with extreme caution.
+    volumes: []
+    initContainers: []
+    containers: []
+
+  # Timestamp-activated hardfork upgrades. The operator rolls pods onto the image starting
+  # leadTime (default 6h) before activatesAt, honoring the rollout strategy and validator guards.
+  # Old binaries fork off the network at activation; the roll must finish inside the lead window.
+  scheduledUpgrades:
+    - activatesAt: "2026-08-30T14:00:00Z"
+      image: ghcr.io/tempoxyz/tempo:v1.12.0
+      leadTime: 6h
+
+  # Execution datadir (--datadir). MUST be node-local storage; network-attached volumes
+  # (GCP PD, EBS, ...) are not supported by Tempo for execution state. Contents are disposable
+  # and re-seeded by `tempo download` after any pod reschedule.
+  execVolume:
+    emptyDir:
+      sizeLimit: 1500Gi
+    # Alternative: a generic ephemeral volume with a node-local storage class:
+    # ephemeral:
+    #   volumeClaimTemplate: ...
+
+  # Consensus datadir (--consensus.datadir) on a per-ordinal ReadWriteOnce PVC. Holds the
+  # DKG signing share. Always RWO (attach fence); no dataSource seeding is offered.
+  consensusVolume:
+    storageClassName: standard-rwo
+    resources:
+      requests:
+        storage: 20Gi
+
+  # Required iff role: validator. See tempo_v1alpha1_tempofullnode_validator.yaml.
+  # signingKey:
+  #   signingKeySecret: {name: tempo-validator-keys, key: signing-key}
+  #   encryptionSecret: {name: tempo-validator-keys, key: consensus-secret}
+
+  snapshotInit:
+    # Auto (default): download only when the exec datadir is unpopulated.
+    # Always: refresh with --force (preserves discovery-secret + known-peers.json).
+    # Never: no init sync; the node syncs from genesis.
+    policy: Auto
+    # minimal | full | archive. Defaults by role (validator=minimal, rpc=full, archive=archive).
+    # profile: full
+    # Override the snapshot source or manifest:
+    # url: https://snapshots.example.com/...
+    # manifestURL: https://snapshots.example.com/manifest.json
+
+  rpc:
+    # Expose JSON-RPC outside the pod (default: true for rpc/archive, false for validator).
+    # The node always serves JSON-RPC in-pod for health checks regardless of this setting.
+    enabled: true
+    port: 8545
+    apis: [eth, net, web3, txpool, trace]
+    ws:
+      enabled: false
+      port: 8546
+
+  p2p:
+    # p2p listen + discovery port (TCP + UDP).
+    port: 30303
+
+  telemetry:
+    metricsPort: 9000
+    # Prefer telemetryURLSecret when the URL embeds a token.
+    # telemetryURL: https://telemetry.example.com
+    # telemetryURLSecret: {name: telemetry, key: url}
+    # metricsInterval: 10s
+
+  service:
+    # How many p2p services get external (LoadBalancer) addresses. Default 1.
+    maxP2PExternalAddresses: 1
+    p2pTemplate:
+      metadata:
+        annotations: {}
+    rpcTemplate:
+      # E.g. keep the RPC service internal to the VPC:
+      metadata:
+        annotations: {}
+
+  # Rolling-update budget. Clamped to 1 for validators.
+  strategy:
+    maxUnavailable: 25%
+
+  selfHeal:
+    # Automatically grow the consensus PVC as it fills. The exec volume cannot be resized;
+    # monitor it via node metrics and move to a bigger node shape instead.
+    pvcAutoScale:
+      usedSpacePercentage: 80
+      increaseQuantity: 20%
+      maxSize: 100Gi
+    # Delete pods whose height lags the fleet maximum (never validators).
+    heightDriftMitigation:
+      threshold: 1000
+
+  # Per-instance debugging overrides, keyed by pod name.
+  instanceOverrides: {}
+  #  tempo-full-reference-0:
+  #    disable: Pod
+  #    image: ghcr.io/tempoxyz/tempo:v1.11.1
+  #    nodeSelector: {}
+  #    consensusVolume: ...
+
+  # Retain | Delete (default Delete) for consensus PVCs on scale-down.
+  volumeRetentionPolicy: Delete
+
+  # Pods use this service account if set; otherwise the namespace default.
+  # serviceAccountName: ""
