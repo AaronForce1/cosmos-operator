@@ -238,7 +238,7 @@ func (pc PodControl) detectStuckTermination(crd *tempov1alpha1.TempoFullNode, po
 		if pod.Spec.TerminationGracePeriodSeconds != nil {
 			grace = *pod.Spec.TerminationGracePeriodSeconds
 		}
-		deadline := pod.DeletionTimestamp.Time.Add(time.Duration(grace)*time.Second + slack)
+		deadline := pod.DeletionTimestamp.Add(time.Duration(grace)*time.Second + slack)
 		if now.After(deadline) {
 			return true
 		}

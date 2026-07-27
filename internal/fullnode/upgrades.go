@@ -21,7 +21,7 @@ func upgradeLeadTime(u tempov1alpha1.ScheduledUpgrade) time.Duration {
 
 // upgradeRollStart is the instant the operator starts rolling pods onto the upgrade's image.
 func upgradeRollStart(u tempov1alpha1.ScheduledUpgrade) time.Time {
-	return u.ActivatesAt.Time.Add(-upgradeLeadTime(u))
+	return u.ActivatesAt.Add(-upgradeLeadTime(u))
 }
 
 // DesiredImage returns the image all pods should run at time "now": the pod template's image,
