@@ -39,7 +39,7 @@ spec:
       annotations: {}
     # Image for the node container and the snapshot init container.
     # Superseded while a scheduledUpgrades entry is active.
-    image: ghcr.io/tempoxyz/tempo:v1.11.0
+    image: ghcr.io/tempoxyz/tempo:1.11.0
     imagePullPolicy: IfNotPresent
     # Pin pods onto node pools that satisfy the local-NVMe requirement for the exec datadir.
     nodeSelector: {}
@@ -65,7 +65,7 @@ spec:
   # Old binaries fork off the network at activation; the roll must finish inside the lead window.
   scheduledUpgrades:
     - activatesAt: "2026-08-30T14:00:00Z"
-      image: ghcr.io/tempoxyz/tempo:v1.12.0
+      image: ghcr.io/tempoxyz/tempo:1.12.0
       leadTime: 6h
 
   # Execution datadir (--datadir). MUST be node-local storage; network-attached volumes
@@ -153,7 +153,7 @@ spec:
   instanceOverrides: {}
   #  tempo-full-reference-0:
   #    disable: Pod
-  #    image: ghcr.io/tempoxyz/tempo:v1.11.1
+  #    image: ghcr.io/tempoxyz/tempo:1.11.1
   #    nodeSelector: {}
   #    consensusVolume: ...
 

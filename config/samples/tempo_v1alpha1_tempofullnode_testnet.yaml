@@ -22,7 +22,7 @@ spec:
   chain:
     chain: moderato
   podTemplate:
-    image: ghcr.io/tempoxyz/tempo:v1.11.0
+    image: ghcr.io/tempoxyz/tempo:1.11.0
     resources:
       requests:
         cpu: "1"
