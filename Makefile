@@ -56,6 +56,18 @@ ifndef KIND
 endif
 	@kubebuilder create api --group tempo --kind $(KIND) --version $(VERSION)
 
+.PHONY: fmt
+fmt: ## Run gofmt against code.
+	gofmt -w .
+
+.PHONY: vet
+vet: ## Run go vet against code.
+	go vet ./...
+
+.PHONY: lint
+lint: ## Run golangci-lint against code.
+	golangci-lint run ./...
+
 .PHONY: test
 test: manifests generate ## Run unit tests.
 ifndef SKIP_TEST
@@ -67,6 +79,14 @@ endif
 .PHONY: test-envtest
 test-envtest: manifests generate envtest ## Run controller tests against a real kube-apiserver via envtest.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN)/envtest -p path)" go test -count=1 -timeout=300s ./controllers/...
+
+.PHONY: test-e2e
+test-e2e: ## Run e2e tests against the cluster in KUBECONFIG (CRD + operator must be running).
+	go test -tags e2e -count=1 -timeout=60m -v ./test/e2e/...
+
+.PHONY: test-e2e-kind
+test-e2e-kind: ## Create a kind cluster, run the operator locally, and execute the e2e suite.
+	./test/e2e/kind.sh
 
 .PHONY: tools
 tools: ## Install dev tools.
