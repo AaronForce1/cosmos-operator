@@ -2,7 +2,7 @@
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
-ENVTEST_K8S_VERSION = 1.24.1
+ENVTEST_K8S_VERSION = 1.28.3
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -63,6 +63,10 @@ ifndef SKIP_TEST
 else
 	echo "Warning: SKIP_TEST=$(SKIP_TEST). Skipping all tests!"
 endif
+
+.PHONY: test-envtest
+test-envtest: manifests generate envtest ## Run controller tests against a real kube-apiserver via envtest.
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN)/envtest -p path)" go test -count=1 -timeout=300s ./controllers/...
 
 .PHONY: tools
 tools: ## Install dev tools.
