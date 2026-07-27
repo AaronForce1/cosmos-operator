@@ -42,7 +42,6 @@ import (
 
 	snapshotv1 "github.com/kubernetes-csi/external-snapshotter/client/v6/apis/volumesnapshot/v1"
 	cosmosv1 "github.com/strangelove-ventures/cosmos-operator/api/v1"
-	cosmosv1alpha1 "github.com/strangelove-ventures/cosmos-operator/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -60,7 +59,6 @@ func init() {
 	utilruntime.Must(snapshotv1.AddToScheme(scheme))
 
 	utilruntime.Must(cosmosv1.AddToScheme(scheme))
-	utilruntime.Must(cosmosv1alpha1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 
@@ -108,7 +106,6 @@ func rootCmd() *cobra.Command {
 
 	// Add subcommands here
 	root.AddCommand(opcmd.HealthCheckCmd())
-	root.AddCommand(opcmd.VersionCheckCmd(scheme))
 	root.AddCommand(&cobra.Command{
 		Short: "Print the version",
 		Use:   "version",
@@ -194,34 +191,6 @@ func startManager(cmd *cobra.Command, args []string) error {
 		cacheController,
 	).SetupWithManager(ctx, mgr); err != nil {
 		return fmt.Errorf("unable to create SelfHealing controller: %w", err)
-	}
-
-	// Test for presence of VolumeSnapshot CRD.
-	snapshotErr := controllers.IndexVolumeSnapshots(ctx, mgr)
-	if snapshotErr != nil {
-		setupLog.Info("Warning: VolumeSnapshot CRD not found, StatefulJob and ScheduledVolumeSnapshot controllers will be disabled")
-	}
-
-	// StatefulJobs
-	jobCtl := controllers.NewStatefulJob(
-		mgr.GetClient(),
-		mgr.GetEventRecorderFor(cosmosv1alpha1.StatefulJobController),
-		snapshotErr != nil,
-	)
-
-	if err = jobCtl.SetupWithManager(ctx, mgr); err != nil {
-		return fmt.Errorf("unable to create StatefulJob controller: %w", err)
-	}
-
-	// ScheduledVolumeSnapshots
-	if err = controllers.NewScheduledVolumeSnapshotReconciler(
-		mgr.GetClient(),
-		mgr.GetEventRecorderFor(cosmosv1alpha1.ScheduledVolumeSnapshotController),
-		statusClient,
-		cacheController,
-		snapshotErr != nil,
-	).SetupWithManager(ctx, mgr); err != nil {
-		return fmt.Errorf("unable to create ScheduledVolumeSnapshot controller: %w", err)
 	}
 
 	//+kubebuilder:scaffold:builder
